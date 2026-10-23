@@ -36,8 +36,10 @@ using namespace PPC64Gen;
 namespace
 {
 // Unconditional branches reach +/- 32 MiB, so with this much code space, any code can branch
-// directly to any other code, including the dispatcher.
+// directly to any other code, including the dispatcher. Near code, which starts with the
+// dispatcher, comes first, then far code.
 constexpr size_t CODE_SIZE = 32 * 1024 * 1024;
+constexpr size_t NEAR_CODE_SIZE = 24 * 1024 * 1024;
 }  // namespace
 
 JitPPC64::JitPPC64(Core::System& system)
@@ -53,12 +55,14 @@ bool JitPPC64::Init()
   if (!CheckValidity())
     return false;
 
+  InitFastmemArena();
+
   RefreshConfig();
 
   AllocCodeSpace(CODE_SIZE);
 
   jo.enableBlocklink = !SConfig::GetInstance().bJITNoBlockLinking;
-  // All loads and stores go through the interpreter, which checks the gather pipe itself.
+  // Stores to the gather pipe fault, and take the slow path, which writes it through the MMU.
   jo.optimizeGatherPipe = false;
   SetOptimizationEnabled(true);
   gpr.Init(this);
@@ -91,6 +95,7 @@ void JitPPC64::SetOptimizationEnabled(bool enabled)
 
 void JitPPC64::Shutdown()
 {
+  m_system.GetMemory().ShutdownFastmemArena();
   FreeCodeSpace();
   blocks.Shutdown();
 }
@@ -109,6 +114,14 @@ bool JitPPC64::HandleFault(uintptr_t access_address, SContext* ctx)
   if (access_address >= stack_guard && access_address < stack_guard + GUARD_SIZE)
     return HandleStackFault();
 
+  // Handle fastmem accesses to addresses that aren't mapped in the arena.
+  if (IsInSpace(reinterpret_cast<u8*>(ctx->CTX_PC)) &&
+      m_system.GetMemory().IsAddressInFastmemArea(reinterpret_cast<u8*>(access_address)) &&
+      HandleFastmemFault(ctx))
+  {
+    return true;
+  }
+
   ERROR_LOG_FMT(DYNA_REC, "Exception handler - Unhandled fault at {:#018x}, PC {:#018x}",
                 access_address, ctx->CTX_PC);
   return false;
@@ -116,6 +129,7 @@ bool JitPPC64::HandleFault(uintptr_t access_address, SContext* ctx)
 
 void JitPPC64::ClearCache()
 {
+  m_fault_to_handler.clear();
   blocks.Clear();
   blocks.ClearRangesToFree();
   {
@@ -142,26 +156,70 @@ void JitPPC64::FreeRanges()
   // Check if any code blocks have been freed in the block cache and transfer this information to
   // the local rangeset to allow overwriting them with new code.
   for (const auto& [from, to] : blocks.GetRangesToFree())
-    m_free_ranges.insert(from, to);
+  {
+    if (from < region + NEAR_CODE_SIZE)
+    {
+      m_fault_to_handler.erase(m_fault_to_handler.lower_bound(from),
+                               m_fault_to_handler.lower_bound(to));
+      m_free_ranges_near.insert(from, to);
+    }
+    else
+    {
+      m_free_ranges_far.insert(from, to);
+    }
+  }
   blocks.ClearRangesToFree();
 }
 
 void JitPPC64::ResetFreeMemoryRanges(size_t routines_size)
 {
-  m_free_ranges.clear();
-  m_free_ranges.insert(region + routines_size, region + region_size);
+  m_free_ranges_near.clear();
+  m_free_ranges_near.insert(region + routines_size, region + NEAR_CODE_SIZE);
+  m_free_ranges_far.clear();
+  m_free_ranges_far.insert(region + NEAR_CODE_SIZE, region + region_size);
 }
 
 bool JitPPC64::SetEmitterStateToFreeCodeRegion()
 {
-  const auto free = m_free_ranges.by_size_begin();
-  if (free == m_free_ranges.by_size_end())
+  const auto free_near = m_free_ranges_near.by_size_begin();
+  const auto free_far = m_free_ranges_far.by_size_begin();
+  if (free_near == m_free_ranges_near.by_size_end() || free_far == m_free_ranges_far.by_size_end())
   {
     WARN_LOG_FMT(DYNA_REC, "Failed to find free memory region in code region.");
     return false;
   }
-  SetCodePtr(free.from(), free.to());
+  SetCodePtr(free_near.from(), free_near.to());
+  m_other_code = free_far.from();
+  m_other_code_end = free_far.to();
+  m_other_code_write_failed = false;
+  m_in_far_code = false;
   return true;
+}
+
+void JitPPC64::SwitchToFarCode()
+{
+  ASSERT(!m_in_far_code);
+  m_in_far_code = true;
+  u8* const near_code = GetWritableCodePtr();
+  u8* const near_code_end = const_cast<u8*>(GetCodeEnd());
+  const bool near_code_write_failed = HasWriteFailed();
+  SetCodePtrUnsafe(m_other_code, m_other_code_end, m_other_code_write_failed);
+  m_other_code = near_code;
+  m_other_code_end = near_code_end;
+  m_other_code_write_failed = near_code_write_failed;
+}
+
+void JitPPC64::SwitchToNearCode()
+{
+  ASSERT(m_in_far_code);
+  m_in_far_code = false;
+  u8* const far_code = GetWritableCodePtr();
+  u8* const far_code_end = const_cast<u8*>(GetCodeEnd());
+  const bool far_code_write_failed = HasWriteFailed();
+  SetCodePtrUnsafe(m_other_code, m_other_code_end, m_other_code_write_failed);
+  m_other_code = far_code;
+  m_other_code_end = far_code_end;
+  m_other_code_write_failed = far_code_write_failed;
 }
 
 void JitPPC64::Run()
@@ -197,6 +255,8 @@ void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
 
   const Interpreter::Instruction instr = Interpreter::GetInterpreterOp(inst);
   ABI_CallFunction(instr, &m_system.GetInterpreter(), inst.hex);
+  // mtmsr and rfi change MSR[DR], and with it the arena.
+  LD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
 
   if (js.op->branchAction == PPCAnalyst::BranchAction::IdleLoop)
   {
@@ -238,6 +298,7 @@ void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
 void JitPPC64::HLEFunction(u32 hook_index)
 {
   ABI_CallFunction(&HLE::ExecuteFromJIT, js.compilerPC, hook_index, &m_system);
+  LD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
 }
 
 bool JitPPC64::HandleFunctionHooking(u32 address)
@@ -429,22 +490,28 @@ void JitPPC64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
   if (SetEmitterStateToFreeCodeRegion())
   {
     u8* near_start = GetWritableCodePtr();
+    u8* far_start = m_other_code;
 
     JitBlock* b = blocks.AllocateBlock(em_address);
     if (DoJit(em_address, b, nextPC))
     {
       // Code generation succeeded.
 
-      // Mark the memory region that this code block uses as used in the local rangeset.
+      // Mark the memory regions that this code block uses as used in the local rangesets.
       u8* near_end = GetWritableCodePtr();
       if (near_start != near_end)
-        m_free_ranges.erase(near_start, near_end);
+        m_free_ranges_near.erase(near_start, near_end);
+      u8* far_end = m_other_code;
+      if (far_start != far_end)
+        m_free_ranges_far.erase(far_start, far_end);
+      FlushIcacheSection(far_start, far_end);
 
-      // Store the used memory region in the block so we know what to mark as unused when the
+      // Store the used memory regions in the block so we know what to mark as unused when the
       // block gets invalidated.
       b->near_begin = near_start;
       b->near_end = near_end;
-      b->far_begin = b->far_end = nullptr;
+      b->far_begin = far_start;
+      b->far_end = far_end;
 
       blocks.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
 
@@ -572,7 +639,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     WriteExit(nextPC);
   }
 
-  if (HasWriteFailed())
+  if (HasWriteFailed() || m_other_code_write_failed)
   {
     WARN_LOG_FMT(DYNA_REC, "JIT ran out of space in code region during code generation.");
     return false;
@@ -591,7 +658,7 @@ void JitPPC64::EraseSingleBlock(const JitBlock& block)
 
 std::vector<JitBase::MemoryStats> JitPPC64::GetMemoryStats() const
 {
-  return {{"code", m_free_ranges.get_stats()}};
+  return {{"near", m_free_ranges_near.get_stats()}, {"far", m_free_ranges_far.get_stats()}};
 }
 
 std::size_t JitPPC64::DisassembleNearCode(const JitBlock& block, std::ostream& stream) const
@@ -601,8 +668,7 @@ std::size_t JitPPC64::DisassembleNearCode(const JitBlock& block, std::ostream& s
 
 std::size_t JitPPC64::DisassembleFarCode(const JitBlock& block, std::ostream& stream) const
 {
-  stream << "N/A\n";
-  return 0;
+  return m_disassembler->Disassemble(block.far_begin, block.far_end, stream);
 }
 
 void JitPPC64::LogGeneratedCode() const

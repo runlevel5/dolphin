@@ -353,6 +353,28 @@ static void MixMemory(void)
     asm volatile(insn " %0," #offset "(%1)" : "=r"(r_), "+b"(p_) : : "memory");                    \
     Record(insn, r_, (u32)(p_ - memory), 0);                                                       \
   } while (0)
+#define LOADUX(insn)                                                                               \
+  do                                                                                               \
+  {                                                                                                \
+    u32 r_;                                                                                        \
+    u8* p_ = memory;                                                                               \
+    asm volatile(insn " %0,%1,%2" : "=&r"(r_), "+b"(p_) : "r"(index) : "memory");                  \
+    Record(insn, r_, (u32)(p_ - memory), 0);                                                       \
+  } while (0)
+#define STOREU(insn, offset)                                                                       \
+  do                                                                                               \
+  {                                                                                                \
+    u8* p_ = base;                                                                                 \
+    asm volatile(insn " %1," #offset "(%0)" : "+b"(p_) : "r"(value) : "memory");                   \
+    Record(insn, (u32)(p_ - memory), 0, 0);                                                        \
+  } while (0)
+#define STOREUX(insn)                                                                              \
+  do                                                                                               \
+  {                                                                                                \
+    u8* p_ = memory;                                                                               \
+    asm volatile(insn " %1,%0,%2" : "+b"(p_) : "r"(value), "r"(index) : "memory");                 \
+    Record(insn, (u32)(p_ - memory), 0, 0);                                                        \
+  } while (0)
 #define STORE(insn, offset)                                                                        \
   asm volatile(insn " %0," #offset "(%1)" : : "r"(value), "b"(base) : "memory")
 #define STOREX(insn) asm volatile(insn " %0,%1,%2" : : "r"(value), "b"(memory), "r"(index) : "memory")
@@ -385,6 +407,10 @@ static void TestLoadsAndStores(void)
     LOADU("lhzu", -2);
     LOADU("lhau", 4);
     LOADU("lwzu", 8);
+    LOADUX("lbzux");
+    LOADUX("lhzux");
+    LOADUX("lhaux");
+    LOADUX("lwzux");
 
     STORE("stb", 0);
     STORE("sth", 5);
@@ -394,6 +420,12 @@ static void TestLoadsAndStores(void)
     STOREX("stwx");
     STOREX("sthbrx");
     STOREX("stwbrx");
+    STOREU("stbu", 3);
+    STOREU("sthu", -6);
+    STOREU("stwu", 10);
+    STOREUX("stbux");
+    STOREUX("sthux");
+    STOREUX("stwux");
     MixMemory();
 
     // Load and store multiple words and strings, on aligned addresses.
@@ -422,6 +454,31 @@ static void TestLoadsAndStores(void)
     MixMemory();
   }
   End("loads-stores");
+}
+
+// Accesses to MMIO, which the JIT's fastmem can't do: the first one faults, and later ones take
+// the slow path that the fault handler patched in.
+static void TestMMIO(void)
+{
+  Begin();
+  // VI top field base (left), which reads back what was written to it.
+  u8* const base = (u8*)0xCC00201C;
+  const u32 saved = *(volatile u32*)base;
+  for (int i = 0; i < 100; i++)
+  {
+    BeginIteration();
+    u32 value = Random() & 0x00FFFE00;
+    STORE("stw", 0);
+    LOAD("lwz", 0);
+    LOAD("lhz", 0);
+    LOAD("lhz", 2);
+    LOAD("lha", 2);
+    value = Random() & 0xFE00;
+    STORE("sth", 2);
+    LOAD("lwz", 0);
+  }
+  *(volatile u32*)base = saved;
+  End("mmio");
 }
 
 static u32 Fibonacci(u32 n)
@@ -931,6 +988,7 @@ int main(void)
   TestRotates();
   TestCompareAndConditionRegister();
   TestLoadsAndStores();
+  TestMMIO();
   TestBranches();
   TestRegisterPressure();
   TestFloatingPoint(0);

@@ -11,7 +11,7 @@ using namespace PPC64Gen;
 namespace
 {
 constexpr u32 FIRST_GUEST_HOST_REG = 14;
-constexpr u32 LAST_GUEST_HOST_REG = 29;
+constexpr u32 LAST_GUEST_HOST_REG = 28;
 constexpr u32 FIRST_SCRATCH_REG = 5;
 constexpr u32 LAST_SCRATCH_REG = 11;
 }  // namespace
@@ -124,6 +124,14 @@ PPC64GPRCache::ScopedReg PPC64GPRCache::GetScopedReg()
 
   ASSERT_MSG(DYNA_REC, false, "Out of scratch registers");
   return {};
+}
+
+BitSet32 PPC64GPRCache::GetScratchRegsInUse() const
+{
+  BitSet32 scratch{};
+  for (u32 i = FIRST_SCRATCH_REG; i <= LAST_SCRATCH_REG; i++)
+    scratch[i] = true;
+  return m_host_in_use & scratch;
 }
 
 void PPC64GPRCache::UnlockReg(GPR reg)

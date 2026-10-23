@@ -688,6 +688,7 @@ elseif(_M_PPC_64)
     PowerPC/JitPPC64/JitPPC64Cache.h
     PowerPC/JitPPC64/JitPPC64_Branch.cpp
     PowerPC/JitPPC64/JitPPC64_Integer.cpp
+    PowerPC/JitPPC64/JitPPC64_LoadStore.cpp
     PowerPC/JitPPC64/JitPPC64_RegCache.cpp
     PowerPC/JitPPC64/JitPPC64_RegCache.h
     PowerPC/JitPPC64/JitPPC64_SystemRegisters.cpp

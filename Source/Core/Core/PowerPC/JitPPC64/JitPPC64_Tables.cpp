@@ -49,21 +49,21 @@ constexpr std::array<JitPPC64OpTemplate, 54> s_primary_table{{
     {28, &JitPPC64::arith_imm},  // andi_rc
     {29, &JitPPC64::arith_imm},  // andis_rc
 
-    {32, &JitPPC64::FallBackToInterpreter},  // lwz
-    {33, &JitPPC64::FallBackToInterpreter},  // lwzu
-    {34, &JitPPC64::FallBackToInterpreter},  // lbz
-    {35, &JitPPC64::FallBackToInterpreter},  // lbzu
-    {40, &JitPPC64::FallBackToInterpreter},  // lhz
-    {41, &JitPPC64::FallBackToInterpreter},  // lhzu
-    {42, &JitPPC64::FallBackToInterpreter},  // lha
-    {43, &JitPPC64::FallBackToInterpreter},  // lhau
+    {32, &JitPPC64::lXX},  // lwz
+    {33, &JitPPC64::lXX},  // lwzu
+    {34, &JitPPC64::lXX},  // lbz
+    {35, &JitPPC64::lXX},  // lbzu
+    {40, &JitPPC64::lXX},  // lhz
+    {41, &JitPPC64::lXX},  // lhzu
+    {42, &JitPPC64::lXX},  // lha
+    {43, &JitPPC64::lXX},  // lhau
 
-    {44, &JitPPC64::FallBackToInterpreter},  // sth
-    {45, &JitPPC64::FallBackToInterpreter},  // sthu
-    {36, &JitPPC64::FallBackToInterpreter},  // stw
-    {37, &JitPPC64::FallBackToInterpreter},  // stwu
-    {38, &JitPPC64::FallBackToInterpreter},  // stb
-    {39, &JitPPC64::FallBackToInterpreter},  // stbu
+    {44, &JitPPC64::stX},  // sth
+    {45, &JitPPC64::stX},  // sthu
+    {36, &JitPPC64::stX},  // stw
+    {37, &JitPPC64::stX},  // stwu
+    {38, &JitPPC64::stX},  // stb
+    {39, &JitPPC64::stX},  // stbu
 
     {46, &JitPPC64::FallBackToInterpreter},  // lmw
     {47, &JitPPC64::FallBackToInterpreter},  // stmw
@@ -208,24 +208,24 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {1014, &JitPPC64::FallBackToInterpreter},  // dcbz
 
     // load word
-    {23, &JitPPC64::FallBackToInterpreter},  // lwzx
-    {55, &JitPPC64::FallBackToInterpreter},  // lwzux
+    {23, &JitPPC64::lXX},  // lwzx
+    {55, &JitPPC64::lXX},  // lwzux
 
     // load halfword
-    {279, &JitPPC64::FallBackToInterpreter},  // lhzx
-    {311, &JitPPC64::FallBackToInterpreter},  // lhzux
+    {279, &JitPPC64::lXX},  // lhzx
+    {311, &JitPPC64::lXX},  // lhzux
 
     // load halfword signextend
-    {343, &JitPPC64::FallBackToInterpreter},  // lhax
-    {375, &JitPPC64::FallBackToInterpreter},  // lhaux
+    {343, &JitPPC64::lXX},  // lhax
+    {375, &JitPPC64::lXX},  // lhaux
 
     // load byte
-    {87, &JitPPC64::FallBackToInterpreter},   // lbzx
-    {119, &JitPPC64::FallBackToInterpreter},  // lbzux
+    {87, &JitPPC64::lXX},   // lbzx
+    {119, &JitPPC64::lXX},  // lbzux
 
     // load byte reverse
-    {534, &JitPPC64::FallBackToInterpreter},  // lwbrx
-    {790, &JitPPC64::FallBackToInterpreter},  // lhbrx
+    {534, &JitPPC64::lXX},  // lwbrx
+    {790, &JitPPC64::lXX},  // lhbrx
 
     // Conditional load/store (Wii SMP)
     {150, &JitPPC64::FallBackToInterpreter},  // stwcxd
@@ -236,20 +236,20 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {597, &JitPPC64::FallBackToInterpreter},  // lswi
 
     // store word
-    {151, &JitPPC64::FallBackToInterpreter},  // stwx
-    {183, &JitPPC64::FallBackToInterpreter},  // stwux
+    {151, &JitPPC64::stX},  // stwx
+    {183, &JitPPC64::stX},  // stwux
 
     // store halfword
-    {407, &JitPPC64::FallBackToInterpreter},  // sthx
-    {439, &JitPPC64::FallBackToInterpreter},  // sthux
+    {407, &JitPPC64::stX},  // sthx
+    {439, &JitPPC64::stX},  // sthux
 
     // store byte
-    {215, &JitPPC64::FallBackToInterpreter},  // stbx
-    {247, &JitPPC64::FallBackToInterpreter},  // stbux
+    {215, &JitPPC64::stX},  // stbx
+    {247, &JitPPC64::stX},  // stbux
 
     // store bytereverse
-    {662, &JitPPC64::FallBackToInterpreter},  // stwbrx
-    {918, &JitPPC64::FallBackToInterpreter},  // sthbrx
+    {662, &JitPPC64::stX},  // stwbrx
+    {918, &JitPPC64::stX},  // sthbrx
 
     {661, &JitPPC64::FallBackToInterpreter},  // stswx
     {725, &JitPPC64::FallBackToInterpreter},  // stswi

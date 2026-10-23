@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <map>
 #include <memory>
 
 #include "Common/PPC64Emitter.h"
@@ -20,6 +21,9 @@ class HostDisassembler;
 constexpr PPC64Gen::GPR PPC_REG = PPC64Gen::GPR::R31;
 // The guest PC when entering the dispatcher. Non-volatile, so that it survives calls.
 constexpr PPC64Gen::GPR DISPATCHER_PC = PPC64Gen::GPR::R30;
+// The base of the fastmem arena for the current MSR[DR], PowerPCState::mem_ptr. Non-volatile, so
+// that it survives calls.
+constexpr PPC64Gen::GPR MEM_REG = PPC64Gen::GPR::R29;
 
 // Offsets into PowerPCState, for D-form loads and stores relative to PPC_REG.
 #ifdef __GNUC__
@@ -128,6 +132,10 @@ public:
   void cmpi(UGeckoInstruction inst);
   void cmpli(UGeckoInstruction inst);
 
+  // Loads and stores
+  void lXX(UGeckoInstruction inst);
+  void stX(UGeckoInstruction inst);
+
   // System registers
   void mfspr(UGeckoInstruction inst);
   void mtspr(UGeckoInstruction inst);
@@ -136,7 +144,36 @@ public:
   void mcrf(UGeckoInstruction inst);
   void crXXX(UGeckoInstruction inst);
 
+  // The stack frame saves the scratch registers, which are volatile, around calls from slow paths.
+  static constexpr s32 SCRATCH_SAVE = PPC64Gen::STACK_FRAME_MIN_SIZE + 8 * 8;
+  static constexpr s32 SCRATCH_SAVE_SIZE = 8 * 7;
+  static constexpr s32 ScratchSaveOffset(PPC64Gen::GPR reg)
+  {
+    return SCRATCH_SAVE + 8 * (PPC64Gen::DecodeReg(reg) - 5);
+  }
+
 private:
+  struct MemAccess
+  {
+    bool store = false;
+    u32 size = 0;
+    bool sign_extend = false;
+    // lwbrx, lhbrx, stwbrx and sthbrx
+    bool reverse = false;
+  };
+
+  // Puts the effective address of a load or store, zero-extended, in addr.
+  void ComputeAddress(PPC64Gen::GPR addr, UGeckoInstruction inst, bool indexed);
+  // Loads into or stores from value, at the address in addr.
+  void EmitMemoryAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
+  void EmitFastAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
+  void EmitSlowAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
+  bool HandleFastmemFault(SContext* ctx);
+
+  // Slow paths go in far code, out of the way of the code that runs.
+  void SwitchToFarCode();
+  void SwitchToNearCode();
+
   void HLEFunction(u32 hook_index);
   bool HandleFunctionHooking(u32 address);
   void SetOptimizationEnabled(bool enabled);
@@ -195,7 +232,17 @@ private:
 
   JitPPC64BlockCache blocks{*this};
 
-  Common::RangeSizeSet<u8*> m_free_ranges;
+  Common::RangeSizeSet<u8*> m_free_ranges_near;
+  Common::RangeSizeSet<u8*> m_free_ranges_far;
+
+  // The emitter state of the code that isn't being written to.
+  u8* m_other_code = nullptr;
+  u8* m_other_code_end = nullptr;
+  bool m_other_code_write_failed = false;
+  bool m_in_far_code = false;
+
+  // The fastmem accesses that haven't faulted yet, and their slow paths.
+  std::map<const u8*, const u8*> m_fault_to_handler;
 
   std::unique_ptr<HostDisassembler> m_disassembler;
 };

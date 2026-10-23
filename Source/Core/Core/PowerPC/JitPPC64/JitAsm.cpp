@@ -24,7 +24,8 @@ namespace
 // The stack frame of the JIT, below the minimal ELFv2 frame header. The parameter save area isn't
 // needed by the functions the JIT calls, but costs nothing.
 constexpr s32 PARAMETER_SAVE_AREA = STACK_FRAME_MIN_SIZE;
-constexpr s32 TOC_SAVE = PARAMETER_SAVE_AREA + 8 * 8;
+static_assert(JitPPC64::SCRATCH_SAVE == PARAMETER_SAVE_AREA + 8 * 8);
+constexpr s32 TOC_SAVE = JitPPC64::SCRATCH_SAVE + JitPPC64::SCRATCH_SAVE_SIZE;
 // The non-volatile registers of the ELFv2 ABI: r14-r31, f14-f31 and v20-v31.
 constexpr u32 FIRST_SAVED_GPR = 14;
 constexpr u32 FIRST_SAVED_FPR = 14;
@@ -105,6 +106,9 @@ void JitPPC64::GenerateAsm()
   }
 
   dispatcher_no_check = GetCodePtr();
+
+  // C++ code may have changed MSR[DR], and with it the arena.
+  LD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
 
   if (u8** const entry_points = GetBlockCache()->GetEntryPoints())
   {

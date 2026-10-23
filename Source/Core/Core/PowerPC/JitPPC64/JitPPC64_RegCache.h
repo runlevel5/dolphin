@@ -14,7 +14,7 @@ class JitPPC64;
 
 // Gives instructions host registers for guest GPRs, and scratch registers.
 //
-// Guest registers live in the non-volatile registers R14-R29, so that they survive calls. A host
+// Guest registers live in the non-volatile registers R14-R28, so that they survive calls. A host
 // register holds a guest register's value in its low 32 bits; the upper 32 bits are undefined.
 //
 // A guest register is loaded when an instruction first uses it, and stays in its host register
@@ -78,6 +78,7 @@ public:
 
   // Scratch registers, from the volatile registers R5-R11.
   ScopedReg GetScopedReg();
+  BitSet32 GetScratchRegsInUse() const;
 
 private:
   struct GuestReg

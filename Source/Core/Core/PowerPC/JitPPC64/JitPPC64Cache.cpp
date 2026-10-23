@@ -71,6 +71,8 @@ void JitPPC64BlockCache::DestroyBlock(JitBlock& block)
 
   if (block.near_begin != block.near_end)
     m_ranges_to_free_on_next_codegen.emplace_back(block.near_begin, block.near_end);
+  if (block.far_begin != block.far_end)
+    m_ranges_to_free_on_next_codegen.emplace_back(block.far_begin, block.far_end);
 }
 
 const std::vector<std::pair<u8*, u8*>>& JitPPC64BlockCache::GetRangesToFree() const
