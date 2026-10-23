@@ -276,8 +276,8 @@ else()
     )
   elseif(_M_PPC_64)
     target_sources(common PRIVATE
-      GenericFPURoundMode.cpp
       PPCCPUDetect.cpp
+      PPCFPURoundMode.cpp
     )
   else() # Generic
     target_sources(common PRIVATE
