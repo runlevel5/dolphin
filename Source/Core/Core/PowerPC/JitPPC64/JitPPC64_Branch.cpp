@@ -19,7 +19,7 @@ void JitPPC64::sc(UGeckoInstruction inst)
   INSTRUCTION_START
   JITDISABLE(bJITBranchOff);
 
-  gpr.Flush();
+  gpr.Flush(FlushMode::All);
   {
     const auto tmp = gpr.GetScopedReg();
     LWZ(tmp, PPC_REG, PPCSTATE_OFF(Exceptions));
@@ -47,7 +47,7 @@ void JitPPC64::bx(UGeckoInstruction inst)
   if (js.op->branchAction == PPCAnalyst::BranchAction::Follow)
     return;
 
-  gpr.Flush();
+  gpr.Flush(FlushMode::All);
 
   if (js.op->branchAction == PPCAnalyst::BranchAction::IdleLoop)
   {
@@ -65,8 +65,6 @@ void JitPPC64::bcx(UGeckoInstruction inst)
   INSTRUCTION_START
   JITDISABLE(bJITBranchOff);
   FALLBACK_IF(IsBranchWatchEnabled());
-
-  gpr.Flush();
 
   FixupBranch ctr_dont_branch;
   if ((inst.BO & BO_DONT_DECREMENT_FLAG) == 0)  // Decrement and test CTR
@@ -98,6 +96,9 @@ void JitPPC64::bcx(UGeckoInstruction inst)
   if (js.op->branchAction == PPCAnalyst::BranchAction::Follow)
     return;
 
+  // The code after the branch continues with the guest registers in host registers.
+  gpr.Flush(FlushMode::MaintainState);
+
   if (js.op->branchAction == PPCAnalyst::BranchAction::IdleLoop)
   {
     // make idle loops go faster
@@ -115,7 +116,10 @@ void JitPPC64::bcx(UGeckoInstruction inst)
     SetJumpTarget(ctr_dont_branch);
 
   if (!analyzer.HasOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE))
+  {
+    gpr.Flush(FlushMode::All);
     WriteExit(js.compilerPC + 4);
+  }
 }
 
 void JitPPC64::bcctrx(UGeckoInstruction inst)
@@ -136,7 +140,7 @@ void JitPPC64::bcctrx(UGeckoInstruction inst)
   // BO_2 == 1z1zz -> b always
 
   // NPC = CTR & 0xfffffffc;
-  gpr.Flush();
+  gpr.Flush(FlushMode::All);
 
   LWZ(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF_SPR(SPR_CTR));
   RLWINM(DISPATCHER_PC, DISPATCHER_PC, 0, 0, 29);
@@ -156,8 +160,6 @@ void JitPPC64::bclrx(UGeckoInstruction inst)
   JITDISABLE(bJITBranchOff);
   FALLBACK_IF(IsBranchWatchEnabled());
 
-  gpr.Flush();
-
   FixupBranch ctr_dont_branch;
   if ((inst.BO & BO_DONT_DECREMENT_FLAG) == 0)  // Decrement and test CTR
   {
@@ -175,6 +177,9 @@ void JitPPC64::bclrx(UGeckoInstruction inst)
     condition_dont_branch =
         JumpIfCRFieldBit(inst.BI >> 2, 3 - (inst.BI & 3), !(inst.BO_2 & BO_BRANCH_IF_TRUE));
   }
+
+  // The code after the branch continues with the guest registers in host registers.
+  gpr.Flush(FlushMode::MaintainState);
 
   // NPC = LR & 0xfffffffc, read before LK writes LR.
   LWZ(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF_SPR(SPR_LR));
@@ -203,5 +208,8 @@ void JitPPC64::bclrx(UGeckoInstruction inst)
     SetJumpTarget(ctr_dont_branch);
 
   if (!analyzer.HasOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE))
+  {
+    gpr.Flush(FlushMode::All);
     WriteExit(js.compilerPC + 4);
+  }
 }

@@ -494,6 +494,139 @@ static void TestBranches(void)
   End("branches");
 }
 
+// More guest registers than the JIT has host registers for, in one block, with branches out of
+// it and within it, so that registers are evicted and flushed on conditional exits.
+// The last word is the loop count.
+static u32 pressure[29];
+
+static void TestRegisterPressure(void)
+{
+  Begin();
+  for (int round = 0; round < 200; round++)
+  {
+    for (int i = 0; i < 28; i++)
+      pressure[i] = Value();
+    pressure[28] = Random() % 64 + 1;
+    register u32* p asm("r3") = pressure;
+    asm volatile(
+        "lwz 0,112(3)\n\t"
+        "mtctr 0\n\t"
+        "lwz 4,0(3)\n\t"
+        "lwz 5,4(3)\n\t"
+        "lwz 6,8(3)\n\t"
+        "lwz 7,12(3)\n\t"
+        "lwz 8,16(3)\n\t"
+        "lwz 9,20(3)\n\t"
+        "lwz 10,24(3)\n\t"
+        "lwz 11,28(3)\n\t"
+        "lwz 12,32(3)\n\t"
+        "lwz 14,36(3)\n\t"
+        "lwz 15,40(3)\n\t"
+        "lwz 16,44(3)\n\t"
+        "lwz 17,48(3)\n\t"
+        "lwz 18,52(3)\n\t"
+        "lwz 19,56(3)\n\t"
+        "lwz 20,60(3)\n\t"
+        "lwz 21,64(3)\n\t"
+        "lwz 22,68(3)\n\t"
+        "lwz 23,72(3)\n\t"
+        "lwz 24,76(3)\n\t"
+        "lwz 25,80(3)\n\t"
+        "lwz 26,84(3)\n\t"
+        "lwz 27,88(3)\n\t"
+        "lwz 28,92(3)\n\t"
+        "lwz 29,96(3)\n\t"
+        "lwz 30,100(3)\n\t"
+        "lwz 31,104(3)\n\t"
+        "lwz 0,108(3)\n\t"
+        "1:\n\t"
+        "add 4,4,5\n\t"
+        "rotlwi 4,4,1\n\t"
+        "add 5,5,6\n\t"
+        "add 6,6,7\n\t"
+        "add 7,7,8\n\t"
+        "cmpwi 7,0\n\t"
+        "blt 2f\n\t"
+        "xori 8,8,0x5a5a\n\t"
+        "2:\n\t"
+        "add 8,8,9\n\t"
+        "rotlwi 8,8,29\n\t"
+        "add 9,9,10\n\t"
+        "add 10,10,11\n\t"
+        "add 11,11,12\n\t"
+        "add 12,12,14\n\t"
+        "rotlwi 12,12,26\n\t"
+        "add 14,14,15\n\t"
+        "add 15,15,16\n\t"
+        "add 16,16,17\n\t"
+        "add 17,17,18\n\t"
+        "rotlwi 17,17,23\n\t"
+        "cmpwi 17,0\n\t"
+        "blt 2f\n\t"
+        "xori 18,18,0x5a5a\n\t"
+        "2:\n\t"
+        "add 18,18,19\n\t"
+        "add 19,19,20\n\t"
+        "add 20,20,21\n\t"
+        "add 21,21,22\n\t"
+        "rotlwi 21,21,20\n\t"
+        "add 22,22,23\n\t"
+        "add 23,23,24\n\t"
+        "add 24,24,25\n\t"
+        "add 25,25,26\n\t"
+        "rotlwi 25,25,17\n\t"
+        "add 26,26,27\n\t"
+        "cmpwi 26,0\n\t"
+        "blt 2f\n\t"
+        "xori 27,27,0x5a5a\n\t"
+        "2:\n\t"
+        "add 27,27,28\n\t"
+        "add 28,28,29\n\t"
+        "add 29,29,30\n\t"
+        "rotlwi 29,29,14\n\t"
+        "add 30,30,31\n\t"
+        "add 31,31,0\n\t"
+        "add 0,0,4\n\t"
+        "bdnz 1b\n\t"
+        "stw 4,0(3)\n\t"
+        "stw 5,4(3)\n\t"
+        "stw 6,8(3)\n\t"
+        "stw 7,12(3)\n\t"
+        "stw 8,16(3)\n\t"
+        "stw 9,20(3)\n\t"
+        "stw 10,24(3)\n\t"
+        "stw 11,28(3)\n\t"
+        "stw 12,32(3)\n\t"
+        "stw 14,36(3)\n\t"
+        "stw 15,40(3)\n\t"
+        "stw 16,44(3)\n\t"
+        "stw 17,48(3)\n\t"
+        "stw 18,52(3)\n\t"
+        "stw 19,56(3)\n\t"
+        "stw 20,60(3)\n\t"
+        "stw 21,64(3)\n\t"
+        "stw 22,68(3)\n\t"
+        "stw 23,72(3)\n\t"
+        "stw 24,76(3)\n\t"
+        "stw 25,80(3)\n\t"
+        "stw 26,84(3)\n\t"
+        "stw 27,88(3)\n\t"
+        "stw 28,92(3)\n\t"
+        "stw 29,96(3)\n\t"
+        "stw 30,100(3)\n\t"
+        "stw 31,104(3)\n\t"
+        "stw 0,108(3)"
+        : "+r"(p)
+        :
+        : "r0", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "r14", "r15", "r16",
+          "r17", "r18", "r19", "r20", "r21", "r22", "r23", "r24", "r25", "r26", "r27", "r28",
+          "r29", "r30", "r31", "ctr", "cr0", "memory");
+    for (int i = 0; i < 28; i++)
+      Mix(pressure[i]);
+  }
+  End("registers");
+}
+
 static u64 Bits(double d)
 {
   union
@@ -799,6 +932,7 @@ int main(void)
   TestCompareAndConditionRegister();
   TestLoadsAndStores();
   TestBranches();
+  TestRegisterPressure();
   TestFloatingPoint(0);
   TestFloatingPoint(4);  // FPSCR.NI
   TestPairedSingles();

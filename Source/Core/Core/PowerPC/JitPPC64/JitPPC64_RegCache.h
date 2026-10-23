@@ -16,11 +16,23 @@ class JitPPC64;
 //
 // Guest registers live in the non-volatile registers R14-R29, so that they survive calls. A host
 // register holds a guest register's value in its low 32 bits; the upper 32 bits are undefined.
-// For now, guest registers are loaded when an instruction uses them, and written back by Flush()
-// after it.
+//
+// A guest register is loaded when an instruction first uses it, and stays in its host register
+// until it is flushed, or evicted to make room. Instructions must get all their guest registers
+// before they branch, so that the cache is in the same state on every path through them. Code
+// that leaves the block or calls into C++ code which uses PowerPCState must flush first.
 class PPC64GPRCache
 {
 public:
+  enum class FlushMode
+  {
+    // Writes back the guest registers that were written, and releases all of them.
+    All,
+    // Writes back the guest registers that were written, but leaves the cache as it was, for a
+    // conditional exit: the code that doesn't exit continues with the same cache.
+    MaintainState,
+  };
+
   class ScopedReg
   {
   public:
@@ -51,6 +63,10 @@ public:
   };
 
   void Init(JitPPC64* jit);
+  // Starts a block, with no guest registers in host registers.
+  void Start();
+  // Starts an instruction: the guest registers that it gets can't be evicted until the next one.
+  void NextInstruction() { m_instruction++; }
 
   // Returns a host register holding guest register preg.
   PPC64Gen::GPR R(u32 preg);
@@ -58,8 +74,7 @@ public:
   // first, for instructions that also read it.
   PPC64Gen::GPR RW(u32 preg, bool load = false);
 
-  // Writes back the guest registers that were written, and releases all of them.
-  void Flush();
+  void Flush(FlushMode mode);
 
   // Scratch registers, from the volatile registers R5-R11.
   ScopedReg GetScopedReg();
@@ -70,12 +85,16 @@ private:
     bool bound = false;
     bool dirty = false;
     PPC64Gen::GPR host = PPC64Gen::GPR::R0;
+    u32 last_used = 0;
   };
 
   PPC64Gen::GPR Bind(u32 preg, bool load);
+  PPC64Gen::GPR AllocateGuestHostReg();
+  void Release(u32 preg);
   void UnlockReg(PPC64Gen::GPR reg);
 
   JitPPC64* m_jit = nullptr;
   std::array<GuestReg, 32> m_guest{};
   BitSet32 m_host_in_use{};
+  u32 m_instruction = 0;
 };

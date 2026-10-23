@@ -23,9 +23,10 @@ trap 'rm -rf "$user" "$log"' EXIT
   "$@" > "$log" 2>&1 &
 pid=$!
 
-# Wait until the program reports that it is done, or crashes, or times out.
+# Wait until the program reports that it is done, or crashes, or times out, or floods the log.
 for ((i = 0; i < timeout * 10; i++)); do
-  if grep -a -q "TEST done" "$log" || ! kill -0 "$pid" 2>/dev/null; then
+  if grep -a -q "TEST done" "$log" || ! kill -0 "$pid" 2>/dev/null ||
+    (($(stat -c %s "$log") > 100000000)); then
     break
   fi
   sleep 0.1

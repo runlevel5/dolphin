@@ -25,11 +25,11 @@ constexpr PPC64Gen::GPR DISPATCHER_PC = PPC64Gen::GPR::R30;
 #ifdef __GNUC__
 #define PPCSTATE_OFF(elem)                                                                         \
   ([]() consteval {                                                                                \
-    _Pragma("GCC diagnostic push")                                                                 \
-        _Pragma("GCC diagnostic ignored \"-Winvalid-offsetof\"") constexpr size_t ppcstate_offset =         \
-            offsetof(PowerPC::PowerPCState, elem);                                                 \
-    _Pragma("GCC diagnostic pop") static_assert(ppcstate_offset < 0x8000);                                  \
-    return static_cast<s16>(ppcstate_offset);                                                               \
+    _Pragma("GCC diagnostic push") _Pragma(                                                        \
+        "GCC diagnostic ignored \"-Winvalid-offsetof\"") constexpr size_t ppcstate_offset =        \
+        offsetof(PowerPC::PowerPCState, elem);                                                     \
+    _Pragma("GCC diagnostic pop") static_assert(ppcstate_offset < 0x8000);                         \
+    return static_cast<s16>(ppcstate_offset);                                                      \
   }())
 #else
 #define PPCSTATE_OFF(elem) (static_cast<s16>(offsetof(PowerPC::PowerPCState, elem)))
@@ -150,8 +150,8 @@ private:
   void GenerateAsmAndResetFreeMemoryRanges();
   void GenerateAsm();
 
-  // Exits from a block. All of them subtract the block's cycles from the downcount, which leaves
-  // CR0 set for the dispatcher.
+  // Exits from a block. The guest registers must be flushed first. All of them subtract the block's
+  // cycles from the downcount, which leaves CR0 set for the dispatcher.
   void Cleanup();
   void DoDownCount();
   void EndProfiling();
@@ -190,6 +190,7 @@ private:
   // Sets XER[CA] from the host's, after an algebraic shift.
   void StoreHostCarry();
 
+  using FlushMode = PPC64GPRCache::FlushMode;
   PPC64GPRCache gpr;
 
   JitPPC64BlockCache blocks{*this};

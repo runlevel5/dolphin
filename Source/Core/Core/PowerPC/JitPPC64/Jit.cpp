@@ -183,6 +183,9 @@ void JitPPC64::SingleStep()
 
 void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
 {
+  // The interpreter works on PowerPCState.
+  gpr.Flush(FlushMode::All);
+
   if (js.op->canEndBlock)
   {
     // The interpreter decides where to go next by writing npc.
@@ -243,6 +246,7 @@ bool JitPPC64::HandleFunctionHooking(u32 address)
   if (!result)
     return false;
 
+  gpr.Flush(FlushMode::All);
   HLEFunction(result.hook_index);
 
   if (result.type != HLE::HookType::Replace)
@@ -366,6 +370,7 @@ void JitPPC64::WriteConditionalExceptionExit(u32 exception)
   LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
   ANDI_(GPR::R3, GPR::R3, static_cast<u16>(exception));
   const FixupBranch no_exception = BC(CCFlags::EQ, CRF::CR0);
+  gpr.Flush(FlushMode::MaintainState);
   WriteExceptionExit(js.compilerPC, false, true);
   SetJumpTarget(no_exception);
 }
@@ -482,6 +487,8 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 
   b->normalEntry = GetWritableCodePtr();
 
+  gpr.Start();
+
   // Conditionally add profiling code.
   if (IsProfilingEnabled())
     ABI_CallFunction(&JitBlock::ProfileData::BeginProfiling, b->profile_data.get());
@@ -497,6 +504,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     const GekkoOPInfo* opinfo = op.opinfo;
     js.downcountAmount += opinfo->num_cycles;
     js.isLastInstruction = i == (code_block.m_num_instructions - 1);
+    gpr.NextInstruction();
 
     if (HandleFunctionHooking(op.address))
       break;
@@ -513,6 +521,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
       if (IsDebuggingEnabled() && !cpu.IsStepping() &&
           m_system.GetPowerPC().GetBreakPoints().IsAddressBreakPoint(op.address))
       {
+        gpr.Flush(FlushMode::All);
         MOVI2R(DISPATCHER_PC, op.address);
         STW(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));
         STW(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(npc));
@@ -539,6 +548,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
         ANDI_(GPR::R3, GPR::R3, 0x2000);  // MSR.FP
         const FixupBranch fpu_enabled = BC(CCFlags::NE, CRF::CR0);
 
+        gpr.Flush(FlushMode::MaintainState);
         LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
         ORI(GPR::R3, GPR::R3, EXCEPTION_FPU_UNAVAILABLE);
         STW(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
@@ -550,9 +560,6 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
       }
 
       CompileInstruction(op);
-
-      // For now, guest registers are only kept in host registers within an instruction.
-      gpr.Flush();
     }
 
     i += js.skipInstructions;
@@ -560,7 +567,10 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   }
 
   if (code_block.m_broken)
+  {
+    gpr.Flush(FlushMode::All);
     WriteExit(nextPC);
+  }
 
   if (HasWriteFailed())
   {
