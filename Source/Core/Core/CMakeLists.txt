@@ -679,6 +679,14 @@ elseif(_M_ARM_64)
     PowerPC/JitArm64/JitArm64_Tables.cpp
     PowerPC/JitArmCommon/BackPatch.h
   )
+elseif(_M_PPC_64)
+  target_sources(core PRIVATE
+    PowerPC/JitPPC64/Jit.cpp
+    PowerPC/JitPPC64/Jit.h
+    PowerPC/JitPPC64/JitAsm.cpp
+    PowerPC/JitPPC64/JitPPC64Cache.cpp
+    PowerPC/JitPPC64/JitPPC64Cache.h
+  )
 endif()
 
 target_link_libraries(core

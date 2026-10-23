@@ -232,6 +232,8 @@ std::span<const CPUCore> AvailableCPUCores()
       CPUCore::JIT64,
 #elif defined(_M_ARM_64)
       CPUCore::JITARM64,
+#elif defined(_M_PPC_64)
+      CPUCore::JITPPC64,
 #endif
       CPUCore::CachedInterpreter,
       CPUCore::Interpreter,

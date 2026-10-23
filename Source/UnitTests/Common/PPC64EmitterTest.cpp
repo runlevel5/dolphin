@@ -945,3 +945,90 @@ TEST(PPC64Emitter, WriteFailure)
   e.SetJumpTarget(fits, buffer.data());
   EXPECT_EQ(buffer.data() + buffer.size(), e.GetCodePtr());
 }
+
+namespace
+{
+u64 EightParameterFunction(u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h)
+{
+  return a / 20 + b / 8 + c / 10 + d / 2 + e / 5 - f + g + h / 3;
+}
+
+s64 SignedParameterFunction(s32 a, s64 b)
+{
+  return a * 3 + b;
+}
+
+u64 PointerParameterFunction(const u64* a, u32 b)
+{
+  return *a + b;
+}
+
+// Emits a function that calls another with ABI_CallFunction, inside a minimal stack frame.
+template <typename F>
+void EmitCall(TestCode& code, F call)
+{
+  code.Emit([&] {
+    code.MFLR(R0);
+    code.STD(R0, R1, STACK_FRAME_LR_SAVE);
+    code.STDU(R1, R1, -STACK_FRAME_MIN_SIZE);
+    code.STD(R2, R1, STACK_FRAME_TOC_SAVE);
+    call();
+    code.LD(R2, R1, STACK_FRAME_TOC_SAVE);
+    code.ADDI(R1, R1, STACK_FRAME_MIN_SIZE);
+    code.LD(R0, R1, STACK_FRAME_LR_SAVE);
+    code.MTLR(R0);
+    code.BLR();
+  });
+}
+}  // namespace
+
+TEST(PPC64Emitter, ABI_CallFunction_Constants)
+{
+  TestCode code;
+  EmitCall(code, [&] { code.ABI_CallFunction(&TwoParameterFunction, 7, 9); });
+  EXPECT_EQ(TwoParameterFunction(7, 9), code.Call<u64>());
+
+  EmitCall(code,
+           [&] { code.ABI_CallFunction(&EightParameterFunction, 100, 16, 30, 4, 50, 6, 7, 900); });
+  EXPECT_EQ(EightParameterFunction(100, 16, 30, 4, 50, 6, 7, 900), code.Call<u64>());
+}
+
+TEST(PPC64Emitter, ABI_CallFunction_Registers)
+{
+  TestCode code;
+  // An argument already in place, and one in a non-argument register. R14 is non-volatile, so
+  // this function saves it below the stack pointer, and restores it for the caller.
+  code.Emit([&] {
+    code.MFLR(R0);
+    code.STD(R0, R1, STACK_FRAME_LR_SAVE);
+    code.STD(R14, R1, -8);
+    code.STDU(R1, R1, -STACK_FRAME_MIN_SIZE - 16);
+    code.STD(R2, R1, STACK_FRAME_TOC_SAVE);
+    code.LI(R14, 9);
+    code.ABI_CallFunction(&TwoParameterFunction, R3, R14);
+    code.LD(R2, R1, STACK_FRAME_TOC_SAVE);
+    code.ADDI(R1, R1, STACK_FRAME_MIN_SIZE + 16);
+    code.LD(R14, R1, -8);
+    code.LD(R0, R1, STACK_FRAME_LR_SAVE);
+    code.MTLR(R0);
+    code.BLR();
+  });
+  EXPECT_EQ(TwoParameterFunction(7, 9), code.Call<u64>(u64(7)));
+
+  // A mix of a register and a constant.
+  EmitCall(code, [&] { code.ABI_CallFunction(&TwoParameterFunction, 20, R4); });
+  EXPECT_EQ(TwoParameterFunction(20, 5), code.Call<u64>(u64(0), u64(5)));
+}
+
+TEST(PPC64Emitter, ABI_CallFunction_Types)
+{
+  TestCode code;
+  // Signed arguments are sign-extended.
+  EmitCall(code, [&] { code.ABI_CallFunction(&SignedParameterFunction, s32(-5), s64(-100000)); });
+  EXPECT_EQ(SignedParameterFunction(-5, -100000), code.Call<s64>());
+
+  static const u64 value = 0x123456789;
+  EmitCall(code,
+           [&] { code.ABI_CallFunction(&PointerParameterFunction, &value, u32(0xFFFFFFFF)); });
+  EXPECT_EQ(PointerParameterFunction(&value, 0xFFFFFFFF), code.Call<u64>());
+}

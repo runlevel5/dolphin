@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstring>
+#include <type_traits>
 
 #include "Common/Assert.h"
 #include "Common/CodeBlock.h"
@@ -759,6 +760,51 @@ public:
   void QuickCallFunction(T func)
   {
     QuickCallFunction(reinterpret_cast<const void*>(func));
+  }
+
+  // Calls a function with up to eight integer or pointer arguments (references are passed as
+  // pointers), each either a constant or a GPR. A GPR argument must not be one of the argument
+  // registers R3-R10, unless it is already in the register for its position.
+  template <typename FuncRet, typename... FuncArgs, typename... Args>
+  void ABI_CallFunction(FuncRet (*func)(FuncArgs...), Args... args)
+  {
+    static_assert(sizeof...(FuncArgs) == sizeof...(Args), "Wrong number of arguments");
+    static_assert(sizeof...(Args) <= 8, "Only arguments in registers are supported");
+
+    u32 position = 0;
+    (ABI_SetArgument(static_cast<GPR>(DecodeReg(GPR::R3) + position++), args), ...);
+    QuickCallFunction(func);
+  }
+
+private:
+  void ABI_SetArgument(GPR reg, GPR value)
+  {
+    ASSERT_MSG(DYNA_REC,
+               value == reg || DecodeReg(value) < DecodeReg(GPR::R3) ||
+                   DecodeReg(value) > DecodeReg(GPR::R10),
+               "Argument register r{} would be overwritten", DecodeReg(value));
+    if (value != reg)
+      MR(reg, value);
+  }
+
+  template <typename T>
+  void ABI_SetArgument(GPR reg, T value)
+  {
+    if constexpr (std::is_pointer_v<T>)
+    {
+      MOVP2R(reg, value);
+    }
+    else
+    {
+      static_assert(std::is_integral_v<T> || std::is_enum_v<T>, "Unsupported argument type");
+      // Integers are sign- or zero-extended to 64 bits, as the ABI requires.
+      using U = std::conditional_t<std::is_enum_v<T>, std::underlying_type<T>,
+                                   std::type_identity<T>>::type;
+      if constexpr (std::is_signed_v<U>)
+        MOVI2R(reg, static_cast<u64>(static_cast<s64>(static_cast<U>(value))));
+      else
+        MOVI2R(reg, static_cast<u64>(static_cast<U>(value)));
+    }
   }
 };
 
