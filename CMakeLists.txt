@@ -758,8 +758,9 @@ endif()
 
 dolphin_add_bundled_library(watcher Externals/watcher)
 
-# Any other platform or BSD is currently unsupported by cpp-ipc
-if(WIN32 OR LINUX OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "QNX")
+# Any other platform, BSD or processor is currently unsupported by cpp-ipc
+if((WIN32 OR LINUX OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "QNX") AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "x86|x64|amd64|AMD64|i[3-6]86|aarch64|arm|ARM")
   dolphin_add_bundled_library(cpp-ipc Externals/cpp-ipc)
   add_definitions(-DHAVE_CPPIPC)
 endif()
