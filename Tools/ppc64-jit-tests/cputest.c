@@ -10,10 +10,11 @@ typedef unsigned int u32;
 typedef int s32;
 typedef unsigned long long u64;
 
-void OSReport(const char* format, ...) __attribute__((noinline, used));
+// noipa: Dolphin reads the arguments, so the compiler must not assume that this function doesn't.
+void OSReport(const char* format, ...) __attribute__((noipa, used));
 void OSReport(const char* format, ...)
 {
-  asm volatile("");
+  asm volatile("" : : : "memory");
 }
 
 static u32 rng_state = 0x12345678;
@@ -37,9 +38,18 @@ static u32 Value(void)
 }
 
 static u32 hash;
+// Each instruction of a group also has its own hash, so that a difference names the instruction.
+#define MAX_OPS 64
+static u32 op_hashes[MAX_OPS];
+static const char* op_names[MAX_OPS];
+static u32 op_index, op_count;
+
 static void Begin(void)
 {
   hash = 0x811C9DC5;
+  for (int i = 0; i < MAX_OPS; i++)
+    op_hashes[i] = 0x811C9DC5;
+  op_count = 0;
 }
 static void Mix(u32 value)
 {
@@ -52,9 +62,51 @@ static void Mix64(u64 value)
   Mix((u32)(value >> 32));
   Mix((u32)value);
 }
+static void BeginIteration(void)
+{
+  op_index = 0;
+}
+static void Record(const char* name, u32 a, u32 b, u32 c)
+{
+  u32 h = op_hashes[op_index];
+  const u32 values[3] = {a, b, c};
+  for (int i = 0; i < 3; i++)
+  {
+    h ^= values[i];
+    h *= 0x01000193;
+    h ^= h >> 15;
+  }
+  op_hashes[op_index] = h;
+  op_names[op_index] = name;
+  op_index++;
+  if (op_index > op_count)
+    op_count = op_index;
+  Mix(a);
+  Mix(b);
+  Mix(c);
+}
+static void Record64(const char* name, u64 a, u64 b, u32 c)
+{
+  Record(name, (u32)(a >> 32) ^ (u32)a * 3, (u32)(b >> 32) ^ (u32)b * 5, c);
+  Mix64(a);
+  Mix64(b);
+}
 static void End(const char* name)
 {
   OSReport("TEST %s %08x\n", name, hash);
+  for (u32 i = 0; i < op_count; i++)
+  {
+    // The mnemonic, up to the first space.
+    char mnemonic[16];
+    u32 length = 0;
+    while (length < sizeof(mnemonic) - 1 && op_names[i][length] && op_names[i][length] != ' ')
+    {
+      mnemonic[length] = op_names[i][length];
+      length++;
+    }
+    mnemonic[length] = 0;
+    OSReport("TEST %s/%02u/%s %08x\n", name, i, mnemonic, op_hashes[i]);
+  }
 }
 
 #define ITERATIONS 2000
@@ -68,9 +120,7 @@ static void End(const char* name)
                  : "=&r"(r_), "=&r"(x_), "=&r"(c_)                                                 \
                  : "r"(a), "r"(b), "r"(xer)                                                        \
                  : "cr0", "xer");                                                                  \
-    Mix(r_);                                                                                       \
-    Mix(x_);                                                                                       \
-    Mix(c_ >> 28);                                                                                 \
+    Record(insn, r_, x_, c_ >> 28);                                                                \
   } while (0)
 #define OP1(insn)                                                                                  \
   do                                                                                               \
@@ -80,9 +130,7 @@ static void End(const char* name)
                  : "=&r"(r_), "=&r"(x_), "=&r"(c_)                                                 \
                  : "r"(a), "r"(xer)                                                                \
                  : "cr0", "xer");                                                                  \
-    Mix(r_);                                                                                       \
-    Mix(x_);                                                                                       \
-    Mix(c_ >> 28);                                                                                 \
+    Record(insn, r_, x_, c_ >> 28);                                                                \
   } while (0)
 #define OPI(insn, imm) OP1(insn " %0,%3," #imm "\n\t#")
 #define RLWIMI(sh, mb, me)                                                                         \
@@ -93,8 +141,7 @@ static void End(const char* name)
                  : "+r"(r_), "=&r"(c_)                                                             \
                  : "r"(a)                                                                          \
                  : "cr0");                                                                         \
-    Mix(r_);                                                                                       \
-    Mix(c_ >> 28);                                                                                 \
+    Record("rlwimi.", r_, c_ >> 28, 0);                                                            \
   } while (0)
 
 static void TestIntegerArithmetic(void)
@@ -102,6 +149,7 @@ static void TestIntegerArithmetic(void)
   Begin();
   for (int i = 0; i < ITERATIONS; i++)
   {
+    BeginIteration();
     const u32 a = Value(), b = Value();
     const u32 xer = Random() & 0xE000007F;  // SO, OV, CA and the string length
     OP2("add");
@@ -163,6 +211,7 @@ static void TestIntegerLogic(void)
   Begin();
   for (int i = 0; i < ITERATIONS; i++)
   {
+    BeginIteration();
     const u32 a = Value(), b = Value();
     const u32 xer = Random() & 0xE000007F;
     OP2("and");
@@ -205,6 +254,7 @@ static void TestRotates(void)
   Begin();
   for (int i = 0; i < ITERATIONS; i++)
   {
+    BeginIteration();
     const u32 a = Value(), b = Value();
     const u32 xer = 0;
     RLWINM(0, 0, 31);
@@ -234,7 +284,7 @@ static void TestRotates(void)
                  : "=&r"(c_)                                                                       \
                  : "r"(a), "r"(b), "r"(cr), "r"(xer)                                               \
                  : "cr0", "cr1", "cr2", "cr3", "cr4", "cr5", "cr6", "cr7", "xer");                 \
-    Mix(c_);                                                                                       \
+    Record(insn, c_, 0, 0);                                                                        \
   } while (0)
 
 static void TestCompareAndConditionRegister(void)
@@ -242,6 +292,7 @@ static void TestCompareAndConditionRegister(void)
   Begin();
   for (int i = 0; i < ITERATIONS; i++)
   {
+    BeginIteration();
     const u32 a = Value(), b = Value();
     const u32 cr = Random();
     const u32 xer = Random() & 0xE0000000;
@@ -285,14 +336,14 @@ static void MixMemory(void)
   {                                                                                                \
     u32 r_;                                                                                        \
     asm volatile(insn " %0," #offset "(%1)" : "=r"(r_) : "b"(base) : "memory");                    \
-    Mix(r_);                                                                                       \
+    Record(insn, r_, 0, 0);                                                                        \
   } while (0)
 #define LOADX(insn)                                                                                \
   do                                                                                               \
   {                                                                                                \
     u32 r_;                                                                                        \
     asm volatile(insn " %0,%1,%2" : "=r"(r_) : "b"(memory), "r"(index) : "memory");                \
-    Mix(r_);                                                                                       \
+    Record(insn, r_, 0, 0);                                                                        \
   } while (0)
 #define LOADU(insn, offset)                                                                        \
   do                                                                                               \
@@ -300,8 +351,7 @@ static void MixMemory(void)
     u32 r_;                                                                                        \
     u8* p_ = base;                                                                                 \
     asm volatile(insn " %0," #offset "(%1)" : "=r"(r_), "+b"(p_) : : "memory");                    \
-    Mix(r_);                                                                                       \
-    Mix((u32)(p_ - memory));                                                                       \
+    Record(insn, r_, (u32)(p_ - memory), 0);                                                       \
   } while (0)
 #define STORE(insn, offset)                                                                        \
   asm volatile(insn " %0," #offset "(%1)" : : "r"(value), "b"(base) : "memory")
@@ -312,6 +362,7 @@ static void TestLoadsAndStores(void)
   Begin();
   for (int i = 0; i < ITERATIONS; i++)
   {
+    BeginIteration();
     FillMemory();
     u8* const base = &memory[64 + (Random() % 64)];
     const u32 index = Random() % 200;
@@ -491,9 +542,7 @@ static double FloatValue(void)
                  : "=&f"(r_), "=&f"(s_), "=&r"(c_)                                                 \
                  : "f"(fpscr), "f"(a), "f"(b), "f"(c)                                              \
                  : "cr1", "cr2");                                                                  \
-    Mix64(Bits(r_));                                                                               \
-    Mix64(Bits(s_));                                                                               \
-    Mix((c_ >> 20) & 0xFFF);                                                                       \
+    Record64(insn, Bits(r_), Bits(s_), (c_ >> 20) & 0xFFF);                                        \
   } while (0)
 
 static void TestFloatingPoint(u32 non_ieee)
@@ -504,6 +553,7 @@ static void TestFloatingPoint(u32 non_ieee)
     const double fpscr = Double(rounding | non_ieee);
     for (int i = 0; i < ITERATIONS; i++)
     {
+      BeginIteration();
       const double a = FloatValue(), b = FloatValue(), c = FloatValue();
       FOP("fadd %0,%4,%5");
       FOP("fadd. %0,%4,%5");
@@ -554,10 +604,8 @@ static void TestFloatingPoint(u32 non_ieee)
                  : "=&f"(r_), "=&f"(s_), "=&r"(c_)                                                 \
                  : "f"(fpscr), "b"(inputs), "b"(out)                                               \
                  : "fr1", "fr2", "fr3", "cr1", "cr2", "memory");                                   \
-    Mix64(Bits(out[0]));                                                                           \
-    Mix64(Bits(out[1]));                                                                           \
+    Record64(insn, Bits(out[0]), Bits(out[1]), (c_ >> 20) & 0xFFF);                                \
     Mix64(Bits(s_));                                                                               \
-    Mix((c_ >> 20) & 0xFFF);                                                                       \
   } while (0)
 
 static float FloatBits(u32 u)
@@ -591,6 +639,7 @@ static void TestPairedSingles(void)
     const double fpscr = Double(rounding);
     for (int i = 0; i < ITERATIONS; i++)
     {
+      BeginIteration();
       for (int j = 0; j < 6; j++)
         inputs[j] = SingleValue();
       PSOP("ps_add %0,1,2");

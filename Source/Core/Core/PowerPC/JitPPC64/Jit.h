@@ -11,6 +11,7 @@
 #include "Core/PowerPC/JitCommon/JitAsmCommon.h"
 #include "Core/PowerPC/JitCommon/JitBase.h"
 #include "Core/PowerPC/JitPPC64/JitPPC64Cache.h"
+#include "Core/PowerPC/JitPPC64/JitPPC64_RegCache.h"
 #include "Core/PowerPC/PPCAnalyst.h"
 
 class HostDisassembler;
@@ -25,14 +26,20 @@ constexpr PPC64Gen::GPR DISPATCHER_PC = PPC64Gen::GPR::R30;
 #define PPCSTATE_OFF(elem)                                                                         \
   ([]() consteval {                                                                                \
     _Pragma("GCC diagnostic push")                                                                 \
-        _Pragma("GCC diagnostic ignored \"-Winvalid-offsetof\"") constexpr size_t offset =         \
+        _Pragma("GCC diagnostic ignored \"-Winvalid-offsetof\"") constexpr size_t ppcstate_offset =         \
             offsetof(PowerPC::PowerPCState, elem);                                                 \
-    _Pragma("GCC diagnostic pop") static_assert(offset < 0x8000);                                  \
-    return static_cast<s16>(offset);                                                               \
+    _Pragma("GCC diagnostic pop") static_assert(ppcstate_offset < 0x8000);                                  \
+    return static_cast<s16>(ppcstate_offset);                                                               \
   }())
 #else
 #define PPCSTATE_OFF(elem) (static_cast<s16>(offsetof(PowerPC::PowerPCState, elem)))
 #endif
+
+#define PPCSTATE_OFF_ARRAY(elem, i)                                                                \
+  (static_cast<s16>(PPCSTATE_OFF(elem) + sizeof(PowerPC::PowerPCState::elem[0]) * (i)))
+#define PPCSTATE_OFF_GPR(i) PPCSTATE_OFF_ARRAY(gpr, i)
+#define PPCSTATE_OFF_CR(i) PPCSTATE_OFF_ARRAY(cr.fields, i)
+#define PPCSTATE_OFF_SPR(i) PPCSTATE_OFF_ARRAY(spr, i)
 
 class JitPPC64 : public JitBase, public PPC64Gen::PPC64CodeBlock, public CommonAsmRoutinesBase
 {
@@ -69,10 +76,70 @@ public:
 
   const char* GetName() const override { return "JITPPC64"; }
 
-private:
+  // OPCODES
+  using Instruction = void (JitPPC64::*)(UGeckoInstruction);
   void FallBackToInterpreter(UGeckoInstruction inst);
+  void DoNothing(UGeckoInstruction inst);
+
+  void DynaRunTable4(UGeckoInstruction inst);
+  void DynaRunTable19(UGeckoInstruction inst);
+  void DynaRunTable31(UGeckoInstruction inst);
+  void DynaRunTable59(UGeckoInstruction inst);
+  void DynaRunTable63(UGeckoInstruction inst);
+
+  // Branch
+  void sc(UGeckoInstruction inst);
+  void bx(UGeckoInstruction inst);
+  void bcx(UGeckoInstruction inst);
+  void bcctrx(UGeckoInstruction inst);
+  void bclrx(UGeckoInstruction inst);
+
+  // Integer
+  void arith_imm(UGeckoInstruction inst);
+  void boolX(UGeckoInstruction inst);
+  void addx(UGeckoInstruction inst);
+  void addix(UGeckoInstruction inst);
+  void addic(UGeckoInstruction inst);
+  void addcx(UGeckoInstruction inst);
+  void addex(UGeckoInstruction inst);
+  void addzex(UGeckoInstruction inst);
+  void subfx(UGeckoInstruction inst);
+  void subfex(UGeckoInstruction inst);
+  void subfzex(UGeckoInstruction inst);
+  void subfic(UGeckoInstruction inst);
+  void negx(UGeckoInstruction inst);
+  void mulli(UGeckoInstruction inst);
+  void mullwx(UGeckoInstruction inst);
+  void mulhwx(UGeckoInstruction inst);
+  void mulhwux(UGeckoInstruction inst);
+  void divwx(UGeckoInstruction inst);
+  void divwux(UGeckoInstruction inst);
+  void extsXx(UGeckoInstruction inst);
+  void cntlzwx(UGeckoInstruction inst);
+  void slwx(UGeckoInstruction inst);
+  void srwx(UGeckoInstruction inst);
+  void srawx(UGeckoInstruction inst);
+  void srawix(UGeckoInstruction inst);
+  void rlwinmx(UGeckoInstruction inst);
+  void rlwnmx(UGeckoInstruction inst);
+  void rlwimix(UGeckoInstruction inst);
+  void cmp(UGeckoInstruction inst);
+  void cmpl(UGeckoInstruction inst);
+  void cmpi(UGeckoInstruction inst);
+  void cmpli(UGeckoInstruction inst);
+
+  // System registers
+  void mfspr(UGeckoInstruction inst);
+  void mtspr(UGeckoInstruction inst);
+  void mfcr(UGeckoInstruction inst);
+  void mtcrf(UGeckoInstruction inst);
+  void mcrf(UGeckoInstruction inst);
+  void crXXX(UGeckoInstruction inst);
+
+private:
   void HLEFunction(u32 hook_index);
   bool HandleFunctionHooking(u32 address);
+  void SetOptimizationEnabled(bool enabled);
   void CompileInstruction(PPCAnalyst::CodeOp& op);
 
   bool DoJit(u32 em_address, JitBlock* b, u32 nextPC);
@@ -101,6 +168,29 @@ private:
   void WriteConditionalExceptionExit(u32 exception);
 
   void LogGeneratedCode() const;
+
+  // Sets CR0 from the 32-bit result in value, with SO copied from XER, as the interpreter does.
+  void ComputeRC0(PPC64Gen::GPR value);
+  // Sets a CR field from the host CR field that a comparison set, with SO copied from XER.
+  void SetCRFieldFromHostCompare(u32 field, PPC64Gen::CRF host_field);
+  // Converts between a CR field and its four PowerPC bits (LT, GT, EQ, SO), in the low bits.
+  void GetCRField(PPC64Gen::GPR out, u32 field);
+  void SetCRField(u32 field, PPC64Gen::GPR value);
+  // Branches if the CR bit (field, bit) is set (or clear).
+  [[nodiscard]] PPC64Gen::FixupBranch JumpIfCRFieldBit(u32 field, u32 bit, bool jump_if_set);
+
+  // d = x + y + carry_in, in 32 bits, setting XER[CA] to the carry out.
+  enum class CarryIn
+  {
+    Zero,
+    One,
+    XER,
+  };
+  void AddWithCarry(PPC64Gen::GPR d, PPC64Gen::GPR x, PPC64Gen::GPR y, CarryIn carry_in);
+  // Sets XER[CA] from the host's, after an algebraic shift.
+  void StoreHostCarry();
+
+  PPC64GPRCache gpr;
 
   JitPPC64BlockCache blocks{*this};
 

@@ -60,6 +60,8 @@ bool JitPPC64::Init()
   jo.enableBlocklink = !SConfig::GetInstance().bJITNoBlockLinking;
   // All loads and stores go through the interpreter, which checks the gather pipe itself.
   jo.optimizeGatherPipe = false;
+  SetOptimizationEnabled(true);
+  gpr.Init(this);
 
   if (!blocks.Init())
     return false;
@@ -71,6 +73,20 @@ bool JitPPC64::Init()
   GenerateAsmAndResetFreeMemoryRanges();
 
   return true;
+}
+
+void JitPPC64::SetOptimizationEnabled(bool enabled)
+{
+  if (enabled)
+  {
+    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE);
+    analyzer.SetOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
+  }
+  else
+  {
+    analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE);
+    analyzer.ClearOption(PPCAnalyst::PPCAnalyzer::OPTION_BRANCH_FOLLOW);
+  }
 }
 
 void JitPPC64::Shutdown()
@@ -238,9 +254,9 @@ bool JitPPC64::HandleFunctionHooking(u32 address)
   return true;
 }
 
-void JitPPC64::CompileInstruction(PPCAnalyst::CodeOp& op)
+void JitPPC64::DoNothing(UGeckoInstruction inst)
 {
-  FallBackToInterpreter(op.inst);
+  // Yup, just don't do anything.
 }
 
 void JitPPC64::Cleanup()
@@ -375,7 +391,9 @@ void JitPPC64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
 
   if (IsDebuggingEnabled())
   {
+    // We can link blocks as long as we are not single stepping
     jo.enableBlocklink = !SConfig::GetInstance().bJITNoBlockLinking;
+    SetOptimizationEnabled(true);
 
     if (!IsProfilingEnabled() && cpu.IsStepping())
     {
@@ -383,6 +401,7 @@ void JitPPC64::Jit(u32 em_address, bool clear_cache_and_retry_on_failure)
 
       // Do not link this block to other blocks while single stepping
       jo.enableBlocklink = false;
+      SetOptimizationEnabled(false);
     }
   }
 
@@ -531,6 +550,9 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
       }
 
       CompileInstruction(op);
+
+      // For now, guest registers are only kept in host registers within an instruction.
+      gpr.Flush();
     }
 
     i += js.skipInstructions;
