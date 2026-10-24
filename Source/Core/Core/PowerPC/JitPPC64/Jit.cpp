@@ -66,6 +66,7 @@ bool JitPPC64::Init()
   jo.optimizeGatherPipe = false;
   SetOptimizationEnabled(true);
   gpr.Init(this);
+  fpr.Init(this);
 
   if (!blocks.Init())
     return false;
@@ -209,6 +210,20 @@ void JitPPC64::SwitchToFarCode()
   m_other_code_write_failed = near_code_write_failed;
 }
 
+FixupBranch JitPPC64::BCFar(CCFlags cond, CRF field)
+{
+  const FixupBranch skip = BC(Invert(cond), field);
+  const FixupBranch far = B();
+  SetJumpTarget(skip);
+  return far;
+}
+
+void JitPPC64::FlushRegisters(FlushMode mode)
+{
+  gpr.Flush(mode);
+  fpr.Flush(mode);
+}
+
 void JitPPC64::SwitchToNearCode()
 {
   ASSERT(m_in_far_code);
@@ -242,7 +257,7 @@ void JitPPC64::SingleStep()
 void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
 {
   // The interpreter works on PowerPCState.
-  gpr.Flush(FlushMode::All);
+  FlushRegisters(FlushMode::All);
 
   if (js.op->canEndBlock)
   {
@@ -255,8 +270,9 @@ void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
 
   const Interpreter::Instruction instr = Interpreter::GetInterpreterOp(inst);
   ABI_CallFunction(instr, &m_system.GetInterpreter(), inst.hex);
-  // mtmsr and rfi change MSR[DR], and with it the arena.
+  // mtmsr and rfi change MSR[DR], and with it the arena, and mtfsf changes FPSCR[NI].
   LD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
+  m_ni_loaded = false;
 
   if (js.op->branchAction == PPCAnalyst::BranchAction::IdleLoop)
   {
@@ -299,6 +315,7 @@ void JitPPC64::HLEFunction(u32 hook_index)
 {
   ABI_CallFunction(&HLE::ExecuteFromJIT, js.compilerPC, hook_index, &m_system);
   LD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
+  m_ni_loaded = false;
 }
 
 bool JitPPC64::HandleFunctionHooking(u32 address)
@@ -307,7 +324,7 @@ bool JitPPC64::HandleFunctionHooking(u32 address)
   if (!result)
     return false;
 
-  gpr.Flush(FlushMode::All);
+  FlushRegisters(FlushMode::All);
   HLEFunction(result.hook_index);
 
   if (result.type != HLE::HookType::Replace)
@@ -431,7 +448,7 @@ void JitPPC64::WriteConditionalExceptionExit(u32 exception)
   LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
   ANDI_(GPR::R3, GPR::R3, static_cast<u16>(exception));
   const FixupBranch no_exception = BC(CCFlags::EQ, CRF::CR0);
-  gpr.Flush(FlushMode::MaintainState);
+  FlushRegisters(FlushMode::MaintainState);
   WriteExceptionExit(js.compilerPC, false, true);
   SetJumpTarget(no_exception);
 }
@@ -555,6 +572,8 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   b->normalEntry = GetWritableCodePtr();
 
   gpr.Start();
+  fpr.Start();
+  m_ni_loaded = false;
 
   // Conditionally add profiling code.
   if (IsProfilingEnabled())
@@ -572,6 +591,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     js.downcountAmount += opinfo->num_cycles;
     js.isLastInstruction = i == (code_block.m_num_instructions - 1);
     gpr.NextInstruction();
+    fpr.NextInstruction();
 
     if (HandleFunctionHooking(op.address))
       break;
@@ -588,7 +608,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
       if (IsDebuggingEnabled() && !cpu.IsStepping() &&
           m_system.GetPowerPC().GetBreakPoints().IsAddressBreakPoint(op.address))
       {
-        gpr.Flush(FlushMode::All);
+        FlushRegisters(FlushMode::All);
         MOVI2R(DISPATCHER_PC, op.address);
         STW(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));
         STW(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(npc));
@@ -615,7 +635,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
         ANDI_(GPR::R3, GPR::R3, 0x2000);  // MSR.FP
         const FixupBranch fpu_enabled = BC(CCFlags::NE, CRF::CR0);
 
-        gpr.Flush(FlushMode::MaintainState);
+        FlushRegisters(FlushMode::MaintainState);
         LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
         ORI(GPR::R3, GPR::R3, EXCEPTION_FPU_UNAVAILABLE);
         STW(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
@@ -635,7 +655,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 
   if (code_block.m_broken)
   {
-    gpr.Flush(FlushMode::All);
+    FlushRegisters(FlushMode::All);
     WriteExit(nextPC);
   }
 

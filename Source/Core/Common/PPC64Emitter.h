@@ -651,7 +651,8 @@ public:
   void XSSUBSP(VSR xt, VSR xa, VSR xb);
   void XSMULSP(VSR xt, VSR xa, VSR xb);
   void XSDIVSP(VSR xt, VSR xa, VSR xb);
-  // The A forms compute xt = xa * xt + xb, the M forms xt = xa * xb + xt.
+  // The A forms compute xt = xa * xb + xt (xt is the addend), the M forms xt = xa * xt + xb
+  // (xt is the multiplicand).
   void XSMADDADP(VSR xt, VSR xa, VSR xb);
   void XSMADDMDP(VSR xt, VSR xa, VSR xb);
   void XSMSUBADP(VSR xt, VSR xa, VSR xb);

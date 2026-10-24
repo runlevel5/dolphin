@@ -684,6 +684,12 @@ static void TestRegisterPressure(void)
   End("registers");
 }
 
+// The JITs don't update the FPSCR's status bits, as the interpreter does, so cputest-jit.elf only
+// compares the bits that they keep: the control bits, and FPRF if it's enabled.
+#ifndef FPSCR_MASK
+#define FPSCR_MASK 0xFFFFFFFFu
+#endif
+
 static u64 Bits(double d)
 {
   union
@@ -732,7 +738,7 @@ static double FloatValue(void)
                  : "=&f"(r_), "=&f"(s_), "=&r"(c_)                                                 \
                  : "f"(fpscr), "f"(a), "f"(b), "f"(c)                                              \
                  : "cr1", "cr2");                                                                  \
-    Record64(insn, Bits(r_), Bits(s_), (c_ >> 20) & 0xFFF);                                        \
+    Record64(insn, Bits(r_), Bits(s_) & FPSCR_MASK, (c_ >> 20) & 0xFFF);                                        \
   } while (0)
 
 static void TestFloatingPoint(u32 non_ieee)
@@ -783,6 +789,85 @@ static void TestFloatingPoint(u32 non_ieee)
   End(non_ieee ? "floating-point-ni" : "floating-point");
 }
 
+// Single precision fused multiply-adds on inputs whose results are ties when rounded from double
+// to single precision, which the interpreter corrects (see NI_madd_msub), and on NaNs for frC whose
+// payloads change when frC is rounded to 25 bits.
+static float FloatBits(u32 u);
+
+static void TestFusedMultiplyAddCases(void)
+{
+  static const u32 ties[][3] = {
+      // a, b, c
+      {0x42480000, 0x1b1c72a0, 0xbc88cc38},  // From Mario Strikers Charged
+      {0xc1b4fd47, 0x29ff8325, 0xbf019c77},
+      {0xc2118627, 0xb47a1e02, 0xc13b95b2},
+      {0xbc790257, 0xaabfede6, 0xc3471e58},
+      {0xbd881ae9, 0x2a9fca37, 0xc289d2bd},
+      {0x4280dc53, 0xb3d01405, 0x416a9cb9},
+  };
+  static const u64 nans[] = {
+      0x7FF800000FFFFFFF, 0x7FF4000008000000, 0xFFF000000FFFFFFF, 0x7FF0000000000001,
+  };
+  Begin();
+  const double fpscr = Double(0);
+  for (u32 i = 0; i < sizeof(ties) / sizeof(ties[0]); i++)
+  {
+    BeginIteration();
+    const double a = FloatBits(ties[i][0]), b = FloatBits(ties[i][1]), c = FloatBits(ties[i][2]);
+    FOP("fmadds %0,%4,%6,%5");
+    FOP("fmsubs %0,%4,%6,%5");
+    FOP("fnmadds %0,%4,%6,%5");
+    FOP("fnmsubs %0,%4,%6,%5");
+  }
+  for (u32 i = 0; i < 2 * sizeof(nans) / sizeof(nans[0]); i++)
+  {
+    BeginIteration();
+    const double a = (i & 1) ? 1.0 : 0.0, b = 2.0, c = Double(nans[i / 2]);
+    FOP("fmadds %0,%4,%6,%5");
+    FOP("fnmsubs %0,%4,%6,%5");
+    FOP("fmuls %0,%4,%6");
+  }
+  End("fma-cases");
+}
+
+// Floating-point loads and stores, including stores of doubles too small for normal singles,
+// which the store converts specially (see ConvertToSingle).
+static void TestFloatLoadsAndStores(void)
+{
+  static u64 buffer[8] __attribute__((aligned(32)));
+  Begin();
+  for (int i = 0; i < ITERATIONS; i++)
+  {
+    BeginIteration();
+    for (int j = 0; j < 8; j++)
+      buffer[j] = ((u64)Random() << 32) | Random();
+    // Exponents from 860 to 910 are around the smallest singles.
+    double value = FloatValue();
+    if (Random() & 1)
+      value = Double((Bits(value) & 0x800FFFFFFFFFFFFFULL) | ((u64)(860 + Random() % 50) << 52));
+    const u32 index = 8 * (Random() % 4);
+    u8* const base = (u8*)buffer;
+    double s0, s1, d0, d1;
+    u8* p = base;
+    asm volatile("lfs %0,4(%5)\n\tlfsx %1,%5,%6\n\tlfd %2,8(%5)\n\tlfdux %3,%4,%6"
+                 : "=&f"(s0), "=&f"(s1), "=&f"(d0), "=&f"(d1), "+b"(p)
+                 : "b"(base), "r"(index)
+                 : "memory");
+    Record64("lfs", Bits(s0), Bits(s1), 0);
+    Record64("lfd", Bits(d0), Bits(d1), (u32)(p - base));
+    p = base + 32;
+    asm volatile("stfs %1,0(%2)\n\tstfsu %1,4(%0)\n\tstfd %1,8(%2)\n\tstfdx %1,%2,%3\n\t"
+                 "stfiwx %1,%0,%3"
+                 : "+b"(p)
+                 : "f"(value), "b"(base + 16), "r"(index)
+                 : "memory");
+    Record("stfs", (u32)(p - base), 0, 0);
+    for (int j = 0; j < 8; j++)
+      Mix64(buffer[j]);
+  }
+  End("float-loads-stores");
+}
+
 #define PSOP(insn)                                                                                 \
   do                                                                                               \
   {                                                                                                \
@@ -795,7 +880,7 @@ static void TestFloatingPoint(u32 non_ieee)
                  : "f"(fpscr), "b"(inputs), "b"(out)                                               \
                  : "fr1", "fr2", "fr3", "cr1", "cr2", "memory");                                   \
     Record64(insn, Bits(out[0]), Bits(out[1]), (c_ >> 20) & 0xFFF);                                \
-    Mix64(Bits(s_));                                                                               \
+    Mix64(Bits(s_) & FPSCR_MASK);                                                                       \
   } while (0)
 
 static float FloatBits(u32 u)
@@ -993,6 +1078,8 @@ int main(void)
   TestRegisterPressure();
   TestFloatingPoint(0);
   TestFloatingPoint(4);  // FPSCR.NI
+  TestFusedMultiplyAddCases();
+  TestFloatLoadsAndStores();
   TestPairedSingles();
   TestQuantizedLoadsAndStores();
   TestSelfModifyingCode();

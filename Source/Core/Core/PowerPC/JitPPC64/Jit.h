@@ -44,6 +44,7 @@ constexpr PPC64Gen::GPR MEM_REG = PPC64Gen::GPR::R29;
 #define PPCSTATE_OFF_GPR(i) PPCSTATE_OFF_ARRAY(gpr, i)
 #define PPCSTATE_OFF_CR(i) PPCSTATE_OFF_ARRAY(cr.fields, i)
 #define PPCSTATE_OFF_SPR(i) PPCSTATE_OFF_ARRAY(spr, i)
+#define PPCSTATE_OFF_PS(i) PPCSTATE_OFF_ARRAY(ps, i)
 
 class JitPPC64 : public JitBase, public PPC64Gen::PPC64CodeBlock, public CommonAsmRoutinesBase
 {
@@ -136,6 +137,21 @@ public:
   void lXX(UGeckoInstruction inst);
   void stX(UGeckoInstruction inst);
 
+  // Floating-point loads and stores
+  void lfXX(UGeckoInstruction inst);
+  void stfXX(UGeckoInstruction inst);
+
+  // Floating point
+  void fp_arith(UGeckoInstruction inst);
+  void fp_logic(UGeckoInstruction inst);
+  void fselx(UGeckoInstruction inst);
+  void frspx(UGeckoInstruction inst);
+  void fctiwx(UGeckoInstruction inst);
+  void fcmpX(UGeckoInstruction inst);
+
+  // Paired singles
+  void ps_mergeXX(UGeckoInstruction inst);
+
   // System registers
   void mfspr(UGeckoInstruction inst);
   void mtspr(UGeckoInstruction inst);
@@ -173,6 +189,29 @@ private:
   // Slow paths go in far code, out of the way of the code that runs.
   void SwitchToFarCode();
   void SwitchToNearCode();
+  // Conditional branches only reach +/- 32 KiB, so a branch to far code skips over an
+  // unconditional one if the condition is false. Returns the unconditional branch.
+  [[nodiscard]] PPC64Gen::FixupBranch BCFar(PPC64Gen::CCFlags cond, PPC64Gen::CRF field);
+
+  void FlushRegisters(FlushMode mode);
+
+  // Floating point.
+  //
+  // FPSCR[NI] makes the guest flush denormal results to zero, which the host can't do (see
+  // Common::FPU::SetSIMDMode), so code with NI set takes a slow path in far code. CR4 holds NI,
+  // as EQ if it's clear: CR4 is non-volatile, so it's loaded once per block, and again after
+  // calls into code that can change the FPSCR.
+  void EnsureNILoaded();
+  // Flushes a denormal double-precision result in reg to zero if NI is set, as ForceDouble.
+  void ForceDouble(PPC64Gen::VSR reg);
+  // Rounds a double-precision result in reg to single precision, as ForceSingle.
+  void ForceSingle(PPC64Gen::VSR reg);
+  // Rounds the mantissa of a multiplicand to 25 bits, as Force25Bit.
+  void Force25Bit(PPC64Gen::VSR out, PPC64Gen::VSR in);
+  // Sets a CR field from the host CR field that a floating-point comparison set.
+  void SetCRFieldFromHostFloatCompare(u32 field, PPC64Gen::CRF host_field);
+  // Converts the double in the low 64 bits of value to single precision, as ConvertToSingle.
+  void ConvertDoubleToSingle(PPC64Gen::GPR value);
 
   void HLEFunction(u32 hook_index);
   bool HandleFunctionHooking(u32 address);
@@ -227,8 +266,9 @@ private:
   // Sets XER[CA] from the host's, after an algebraic shift.
   void StoreHostCarry();
 
-  using FlushMode = PPC64GPRCache::FlushMode;
   PPC64GPRCache gpr;
+  PPC64FPRCache fpr;
+  bool m_ni_loaded = false;
 
   JitPPC64BlockCache blocks{*this};
 

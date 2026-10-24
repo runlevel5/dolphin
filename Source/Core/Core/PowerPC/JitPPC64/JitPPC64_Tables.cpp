@@ -68,15 +68,15 @@ constexpr std::array<JitPPC64OpTemplate, 54> s_primary_table{{
     {46, &JitPPC64::FallBackToInterpreter},  // lmw
     {47, &JitPPC64::FallBackToInterpreter},  // stmw
 
-    {48, &JitPPC64::FallBackToInterpreter},  // lfs
-    {49, &JitPPC64::FallBackToInterpreter},  // lfsu
-    {50, &JitPPC64::FallBackToInterpreter},  // lfd
-    {51, &JitPPC64::FallBackToInterpreter},  // lfdu
+    {48, &JitPPC64::lfXX},  // lfs
+    {49, &JitPPC64::lfXX},  // lfsu
+    {50, &JitPPC64::lfXX},  // lfd
+    {51, &JitPPC64::lfXX},  // lfdu
 
-    {52, &JitPPC64::FallBackToInterpreter},  // stfs
-    {53, &JitPPC64::FallBackToInterpreter},  // stfsu
-    {54, &JitPPC64::FallBackToInterpreter},  // stfd
-    {55, &JitPPC64::FallBackToInterpreter},  // stfdu
+    {52, &JitPPC64::stfXX},  // stfs
+    {53, &JitPPC64::stfXX},  // stfsu
+    {54, &JitPPC64::stfXX},  // stfd
+    {55, &JitPPC64::stfXX},  // stfdu
 
     {56, &JitPPC64::FallBackToInterpreter},  // psq_l
     {57, &JitPPC64::FallBackToInterpreter},  // psq_lu
@@ -88,18 +88,18 @@ constexpr std::array<JitPPC64OpTemplate, 54> s_primary_table{{
 
 constexpr std::array<JitPPC64OpTemplate, 13> s_table4{{
     // SUBOP10
-    {0, &JitPPC64::FallBackToInterpreter},    // ps_cmpu0
-    {32, &JitPPC64::FallBackToInterpreter},   // ps_cmpo0
-    {40, &JitPPC64::FallBackToInterpreter},   // ps_neg
-    {136, &JitPPC64::FallBackToInterpreter},  // ps_nabs
-    {264, &JitPPC64::FallBackToInterpreter},  // ps_abs
-    {64, &JitPPC64::FallBackToInterpreter},   // ps_cmpu1
-    {72, &JitPPC64::FallBackToInterpreter},   // ps_mr
-    {96, &JitPPC64::FallBackToInterpreter},   // ps_cmpo1
-    {528, &JitPPC64::FallBackToInterpreter},  // ps_merge00
-    {560, &JitPPC64::FallBackToInterpreter},  // ps_merge01
-    {592, &JitPPC64::FallBackToInterpreter},  // ps_merge10
-    {624, &JitPPC64::FallBackToInterpreter},  // ps_merge11
+    {0, &JitPPC64::FallBackToInterpreter},   // ps_cmpu0
+    {32, &JitPPC64::FallBackToInterpreter},  // ps_cmpo0
+    {40, &JitPPC64::fp_logic},               // ps_neg
+    {136, &JitPPC64::fp_logic},              // ps_nabs
+    {264, &JitPPC64::fp_logic},              // ps_abs
+    {64, &JitPPC64::FallBackToInterpreter},  // ps_cmpu1
+    {72, &JitPPC64::fp_logic},               // ps_mr
+    {96, &JitPPC64::FallBackToInterpreter},  // ps_cmpo1
+    {528, &JitPPC64::ps_mergeXX},            // ps_merge00
+    {560, &JitPPC64::ps_mergeXX},            // ps_merge01
+    {592, &JitPPC64::ps_mergeXX},            // ps_merge10
+    {624, &JitPPC64::ps_mergeXX},            // ps_merge11
 
     {1014, &JitPPC64::FallBackToInterpreter},  // dcbz_l
 }};
@@ -255,16 +255,16 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {725, &JitPPC64::FallBackToInterpreter},  // stswi
 
     // fp load/store
-    {535, &JitPPC64::FallBackToInterpreter},  // lfsx
-    {567, &JitPPC64::FallBackToInterpreter},  // lfsux
-    {599, &JitPPC64::FallBackToInterpreter},  // lfdx
-    {631, &JitPPC64::FallBackToInterpreter},  // lfdux
+    {535, &JitPPC64::lfXX},  // lfsx
+    {567, &JitPPC64::lfXX},  // lfsux
+    {599, &JitPPC64::lfXX},  // lfdx
+    {631, &JitPPC64::lfXX},  // lfdux
 
-    {663, &JitPPC64::FallBackToInterpreter},  // stfsx
-    {695, &JitPPC64::FallBackToInterpreter},  // stfsux
-    {727, &JitPPC64::FallBackToInterpreter},  // stfdx
-    {759, &JitPPC64::FallBackToInterpreter},  // stfdux
-    {983, &JitPPC64::FallBackToInterpreter},  // stfiwx
+    {663, &JitPPC64::stfXX},  // stfsx
+    {695, &JitPPC64::stfXX},  // stfsux
+    {727, &JitPPC64::stfXX},  // stfdx
+    {759, &JitPPC64::stfXX},  // stfdux
+    {983, &JitPPC64::stfXX},  // stfiwx
 
     {19, &JitPPC64::mfcr},                    // mfcr
     {83, &JitPPC64::FallBackToInterpreter},   // mfmsr
@@ -292,27 +292,27 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 9> s_table59{{
-    {18, &JitPPC64::FallBackToInterpreter},  // fdivsx
-    {20, &JitPPC64::FallBackToInterpreter},  // fsubsx
-    {21, &JitPPC64::FallBackToInterpreter},  // faddsx
+    {18, &JitPPC64::fp_arith},               // fdivsx
+    {20, &JitPPC64::fp_arith},               // fsubsx
+    {21, &JitPPC64::fp_arith},               // faddsx
     {24, &JitPPC64::FallBackToInterpreter},  // fresx
-    {25, &JitPPC64::FallBackToInterpreter},  // fmulsx
-    {28, &JitPPC64::FallBackToInterpreter},  // fmsubsx
-    {29, &JitPPC64::FallBackToInterpreter},  // fmaddsx
-    {30, &JitPPC64::FallBackToInterpreter},  // fnmsubsx
-    {31, &JitPPC64::FallBackToInterpreter},  // fnmaddsx
+    {25, &JitPPC64::fp_arith},               // fmulsx
+    {28, &JitPPC64::fp_arith},               // fmsubsx
+    {29, &JitPPC64::fp_arith},               // fmaddsx
+    {30, &JitPPC64::fp_arith},               // fnmsubsx
+    {31, &JitPPC64::fp_arith},               // fnmaddsx
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 15> s_table63{{
-    {264, &JitPPC64::FallBackToInterpreter},  // fabsx
-    {32, &JitPPC64::FallBackToInterpreter},   // fcmpo
-    {0, &JitPPC64::FallBackToInterpreter},    // fcmpu
-    {14, &JitPPC64::FallBackToInterpreter},   // fctiwx
-    {15, &JitPPC64::FallBackToInterpreter},   // fctiwzx
-    {72, &JitPPC64::FallBackToInterpreter},   // fmrx
-    {136, &JitPPC64::FallBackToInterpreter},  // fnabsx
-    {40, &JitPPC64::FallBackToInterpreter},   // fnegx
-    {12, &JitPPC64::FallBackToInterpreter},   // frspx
+    {264, &JitPPC64::fp_logic},  // fabsx
+    {32, &JitPPC64::fcmpX},      // fcmpo
+    {0, &JitPPC64::fcmpX},       // fcmpu
+    {14, &JitPPC64::fctiwx},     // fctiwx
+    {15, &JitPPC64::fctiwx},     // fctiwzx
+    {72, &JitPPC64::fp_logic},   // fmrx
+    {136, &JitPPC64::fp_logic},  // fnabsx
+    {40, &JitPPC64::fp_logic},   // fnegx
+    {12, &JitPPC64::frspx},      // frspx
 
     {64, &JitPPC64::FallBackToInterpreter},   // mcrfs
     {583, &JitPPC64::FallBackToInterpreter},  // mffsx
@@ -323,16 +323,16 @@ constexpr std::array<JitPPC64OpTemplate, 15> s_table63{{
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 10> s_table63_2{{
-    {18, &JitPPC64::FallBackToInterpreter},  // fdivx
-    {20, &JitPPC64::FallBackToInterpreter},  // fsubx
-    {21, &JitPPC64::FallBackToInterpreter},  // faddx
-    {23, &JitPPC64::FallBackToInterpreter},  // fselx
-    {25, &JitPPC64::FallBackToInterpreter},  // fmulx
+    {18, &JitPPC64::fp_arith},               // fdivx
+    {20, &JitPPC64::fp_arith},               // fsubx
+    {21, &JitPPC64::fp_arith},               // faddx
+    {23, &JitPPC64::fselx},                  // fselx
+    {25, &JitPPC64::fp_arith},               // fmulx
     {26, &JitPPC64::FallBackToInterpreter},  // frsqrtex
-    {28, &JitPPC64::FallBackToInterpreter},  // fmsubx
-    {29, &JitPPC64::FallBackToInterpreter},  // fmaddx
-    {30, &JitPPC64::FallBackToInterpreter},  // fnmsubx
-    {31, &JitPPC64::FallBackToInterpreter},  // fnmaddx
+    {28, &JitPPC64::fp_arith},               // fmsubx
+    {29, &JitPPC64::fp_arith},               // fmaddx
+    {30, &JitPPC64::fp_arith},               // fnmsubx
+    {31, &JitPPC64::fp_arith},               // fnmaddx
 }};
 
 constexpr std::array<JitPPC64::Instruction, 64> s_dyna_op_table = []() consteval {

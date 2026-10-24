@@ -73,6 +73,9 @@ void JitPPC64::EmitFastAccess(MemAccess access, GPR value, GPR addr)
   {
     switch (access.size)
     {
+    case 64:
+      STDBRX(value, MEM_REG, addr);
+      break;
     case 32:
       access.reverse ? STWX(value, MEM_REG, addr) : STWBRX(value, MEM_REG, addr);
       break;
@@ -88,6 +91,9 @@ void JitPPC64::EmitFastAccess(MemAccess access, GPR value, GPR addr)
 
   switch (access.size)
   {
+  case 64:
+    LDBRX(value, MEM_REG, addr);
+    break;
   case 32:
     access.reverse ? LWZX(value, MEM_REG, addr) : LWBRX(value, MEM_REG, addr);
     break;
@@ -105,7 +111,8 @@ void JitPPC64::EmitFastAccess(MemAccess access, GPR value, GPR addr)
 void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
 {
   // Scratch registers are volatile, so save those in use around the call; guest registers are
-  // non-volatile. A load overwrites its destination anyway.
+  // non-volatile. A load overwrites its destination anyway. No scratch VSX registers may be in use.
+  ASSERT(!fpr.AnyScratchRegsInUse());
   BitSet32 to_save = gpr.GetScratchRegsInUse();
   if (!access.store)
     to_save[DecodeReg(value)] = false;
@@ -121,9 +128,15 @@ void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
   CLRLDI(GPR::R12, addr, 32);
   if (access.store)
   {
-    CLRLDI(GPR::R0, value, 32);
+    if (access.size == 64)
+      MR(GPR::R0, value);
+    else
+      CLRLDI(GPR::R0, value, 32);
     switch (access.size)
     {
+    case 64:
+      ABI_CallFunction(&PowerPC::WriteFromJit<u64>, &m_mmu, GPR::R0, GPR::R12);
+      break;
     case 32:
       ABI_CallFunction(access.reverse ? &PowerPC::WriteU32SwapFromJit : &PowerPC::WriteFromJit<u32>,
                        &m_mmu, GPR::R0, GPR::R12);
@@ -141,6 +154,10 @@ void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
   {
     switch (access.size)
     {
+    case 64:
+      ABI_CallFunction(&PowerPC::ReadFromJit<u64>, &m_mmu, GPR::R12);
+      MR(value, GPR::R3);
+      break;
     case 32:
       ABI_CallFunction(&PowerPC::ReadFromJit<u32>, &m_mmu, GPR::R12);
       if (access.reverse)
