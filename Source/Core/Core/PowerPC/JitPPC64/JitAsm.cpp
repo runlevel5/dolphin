@@ -25,7 +25,7 @@ namespace
 // needed by the functions the JIT calls, but costs nothing.
 constexpr s32 PARAMETER_SAVE_AREA = STACK_FRAME_MIN_SIZE;
 static_assert(JitPPC64::SCRATCH_SAVE == PARAMETER_SAVE_AREA + 8 * 8);
-constexpr s32 TOC_SAVE = JitPPC64::ROUTINE_LR_SAVE + 8;
+constexpr s32 TOC_SAVE = JitPPC64::QUANTIZED_VALUE_SAVE + 8;
 // The non-volatile registers of the ELFv2 ABI: r14-r31, f14-f31 and v20-v31.
 constexpr u32 FIRST_SAVED_GPR = 14;
 constexpr u32 FIRST_SAVED_FPR = 14;
@@ -231,6 +231,7 @@ void JitPPC64::GenerateAsm()
   const u8* routines_start = GetCodePtr();
   GenerateSlowAccessRoutines();
   GenerateExceptionExitRoutine();
+  GenerateQuantizedRoutines();
   Common::JitRegister::Register(routines_start, GetCodePtr(), "JIT_SlowAccess");
 
   FlushIcache();

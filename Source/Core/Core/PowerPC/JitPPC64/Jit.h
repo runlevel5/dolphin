@@ -178,6 +178,9 @@ public:
   static constexpr s32 SCRATCH_SAVE_SIZE = 8 * 7;
   // And LR, in routines that make calls.
   static constexpr s32 ROUTINE_LR_SAVE = SCRATCH_SAVE + SCRATCH_SAVE_SIZE;
+  // And LR and another value in the quantized load and store routines, which call those.
+  static constexpr s32 QUANTIZED_LR_SAVE = ROUTINE_LR_SAVE + 8;
+  static constexpr s32 QUANTIZED_VALUE_SAVE = QUANTIZED_LR_SAVE + 8;
   static constexpr s32 ScratchSaveOffset(PPC64Gen::GPR reg)
   {
     return SCRATCH_SAVE + 8 * (PPC64Gen::DecodeReg(reg) - 5);
@@ -206,6 +209,12 @@ private:
   static u32 SlowAccessRoutineIndex(MemAccess access);
   void GenerateSlowAccessRoutines();
   void GenerateExceptionExitRoutine();
+  void GenerateQuantizedRoutines();
+  void QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store, bool indexed, bool update,
+                                     u32 gqr_index, bool single);
+  void GenerateQuantizedLoadRoutine(u32 type, bool single);
+  void GenerateQuantizedStoreRoutine(u32 type, bool single);
+  std::array<PPC64Gen::FixupBranch, 3> EmitQuantizedRAMAddress(u32 size);
   void GenerateSlowAccessRoutine(MemAccess access);
   bool HandleFastmemFault(SContext* ctx);
 
@@ -237,9 +246,12 @@ private:
   void ConvertDoubleToSingle(PPC64Gen::GPR value);
   // Converts the double in the low 64 bits of value to single precision, as ConvertToSingleFTZ.
   void ConvertDoubleToSingleFTZ(PPC64Gen::GPR value);
+  void ConvertDoubleToSingleFTZ(PPC64Gen::GPR value, PPC64Gen::GPR exp, PPC64Gen::GPR high);
   // Quantizes doubleword 0 of in into out for psq_st, as ScaleAndClamp.
   void QuantizeHalf(PPC64Gen::GPR out, PPC64Gen::VSR in, u32 type_size, bool is_signed,
                     s32 exponent);
+  void QuantizeHalf(PPC64Gen::GPR out, PPC64Gen::VSR in, u32 type_size, bool is_signed,
+                    PPC64Gen::VSR factor, PPC64Gen::VSR scaled, PPC64Gen::GPR bound);
   // Computes the result of fp_arith's operation op5 (SUBOP5) into result, from doubleword 0 of a,
   // b and c, rounded to single precision if single, as the interpreter does.
   void EmitFloatArith(u32 op5, bool single, bool round_c, PPC64Gen::VSR result, PPC64Gen::VSR a,
@@ -321,6 +333,9 @@ private:
   std::array<const u8*, 32> m_slow_access_routines{};
   // Takes a pending exception at the PC in R3, after subtracting the cycles in R4.
   const u8* m_exception_exit_routine = nullptr;
+  // Quantized loads and stores whose GQR isn't known when compiling, indexed by W << 3 | type.
+  std::array<const u8*, 16> m_quantized_load_routines{};
+  std::array<const u8*, 16> m_quantized_store_routines{};
 
   std::unique_ptr<HostDisassembler> m_disassembler;
 };

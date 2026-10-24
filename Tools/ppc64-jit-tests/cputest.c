@@ -1031,15 +1031,20 @@ static void TestQuantizedLoadsAndStores(void)
     static const u32 types[] = {0, 4, 5, 6, 7};
     const u32 load_type = types[Random() % 5], store_type = types[Random() % 5];
     const u32 gqr = ((Random() % 64) << 24) | (load_type << 16) | ((Random() % 64) << 8) | store_type;
+    // Also at addresses that aren't 8-byte aligned, and through the uncached mirror, which the JIT
+    // accesses through the MMU.
+    u8* base = &buffer[(Random() % 4) * 3];
+    if (Random() % 4 == 0)
+      base = (u8*)((u32)base | 0x40000000);
     double ps0, ps1;
     asm volatile("mtspr %3,%2\n\tpsq_l 1,0(%4),0,1\n\tpsq_st 1,32(%4),0,1\n\t"
                  "psq_l 2,8(%4),1,1\n\tpsq_st 2,40(%4),1,1\n\tfmr %0,1\n\tps_merge11 %1,1,1"
                  : "=&f"(ps0), "=&f"(ps1)
-                 : "r"(gqr), "i"(GQR(1)), "b"(buffer)
+                 : "r"(gqr), "i"(GQR(1)), "b"(base)
                  : "fr1", "fr2", "memory");
     Mix64(Bits(ps0));
     Mix64(Bits(ps1));
-    for (u32 j = 32; j < 48; j += 4)
+    for (u32 j = 32; j < 64; j += 4)
       Mix(*(u32*)&buffer[j]);
   }
   End("quantized");
@@ -1412,6 +1417,26 @@ static void TestDSI(void)
       p_ = bad;
       asm volatile("psq_stu %1,8(%0),0,0" : "+b"(p_) : "f"(fvalue) : "memory");
       RecordDSI("psq_stu", (u32)(p_ - bad), 0);
+    }
+
+    // Quantized, with a GQR that the block sets, so that the JIT doesn't know its type.
+    {
+      static const u32 types[] = {0, 4, 5, 6, 7};
+      const u32 gqr = (types[Random() % 5] << 16) | types[Random() % 5];
+      double ps0 = fvalue, ps1;
+      u8* p_ = bad;
+      asm volatile("mtspr %4,%3\n\tps_merge00 %0,%0,%0\n\tpsq_lu %0,8(%2),0,1\n\t"
+                   "ps_merge11 %1,%0,%0"
+                   : "+f"(ps0), "=f"(ps1), "+b"(p_)
+                   : "r"(gqr), "i"(GQR(1))
+                   : "memory");
+      RecordDSI("psq_lu gqr", (u32)Bits(ps0) ^ (u32)(Bits(ps1) >> 32), (u32)(p_ - bad));
+      p_ = bad;
+      asm volatile("mtspr %3,%2\n\tpsq_stu %1,8(%0),0,1"
+                   : "+b"(p_)
+                   : "f"(fvalue), "r"(gqr), "i"(GQR(1))
+                   : "memory");
+      RecordDSI("psq_stu gqr", (u32)(p_ - bad), 0);
     }
 
     // A fault in the middle of a block: what the instructions before and after it wrote must
