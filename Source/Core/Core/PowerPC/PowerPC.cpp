@@ -248,6 +248,8 @@ CPUCore DefaultCPUCore()
   return CPUCore::JIT64;
 #elif defined(_M_ARM_64)
   return CPUCore::JITARM64;
+#elif defined(_M_PPC_64)
+  return CPUCore::JITPPC64;
 #else
   return CPUCore::CachedInterpreter;
 #endif
