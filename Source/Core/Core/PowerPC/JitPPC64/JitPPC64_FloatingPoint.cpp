@@ -127,6 +127,26 @@ void JitPPC64::Force25Bit(VSR out, VSR in)
   SwitchToNearCode();
 }
 
+void JitPPC64::SetFPRF(VSR value, bool single)
+{
+  // As PowerPCState::UpdateFPRFDouble or UpdateFPRFSingle. The JITs don't set FPSCR's other status
+  // bits.
+  MFVSRD(GPR::R3, value);
+  BL(single ? m_fprf_single_routine : m_fprf_double_routine);
+}
+
+void JitPPC64::SetFPCCFromHostFloatCompare(CRF host_field)
+{
+  // FPCC, bits 12-15 of FPSCR, gets the compare's FL, FG, FE and FU, as the guest's CR field does.
+  const auto field = gpr.GetScopedReg();
+  const auto fpscr = gpr.GetScopedReg();
+  MFOCRF(field, host_field);
+  RLWINM(field, field, (4 * DecodeReg(host_field) + 4) % 32, 28, 31);
+  LWZ(fpscr, PPC_REG, PPCSTATE_OFF(fpscr));
+  RLWIMI(fpscr, field, 12, 16, 19);
+  STW(fpscr, PPC_REG, PPCSTATE_OFF(fpscr));
+}
+
 void JitPPC64::SetCRFieldFromHostFloatCompare(u32 field, CRF host_field)
 {
   // The host field holds FL, FG, FE and FU, as the guest's does.
@@ -276,7 +296,6 @@ void JitPPC64::fp_arith(UGeckoInstruction inst)
   JITDISABLE(bJITFloatingPointOff);
   INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions || (jo.div_by_zero_exceptions && inst.SUBOP5 == 18));
-  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   const u32 op5 = inst.SUBOP5;
   const bool single = inst.OPCD == 59;
@@ -296,6 +315,8 @@ void JitPPC64::fp_arith(UGeckoInstruction inst)
     XXPERMDI(d, result, result, 0);
   else
     XXPERMDI(d, result, d, 1);
+  if (m_fprf && js.op->wantsFPRF)
+    SetFPRF(result, single);
 }
 
 void JitPPC64::fp_logic(UGeckoInstruction inst)
@@ -381,7 +402,6 @@ void JitPPC64::frspx(UGeckoInstruction inst)
   JITDISABLE(bJITFloatingPointOff);
   INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions);
-  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   const VSR b = fpr.R(inst.FB);
   const VSR d = fpr.RW(inst.FD);
@@ -390,6 +410,8 @@ void JitPPC64::frspx(UGeckoInstruction inst)
   XXLMR(result, b);
   ForceSingle(result);
   XXPERMDI(d, result, result, 0);
+  if (m_fprf && js.op->wantsFPRF)
+    SetFPRF(result, true);
 }
 
 void JitPPC64::fctiwx(UGeckoInstruction inst)
@@ -440,13 +462,14 @@ void JitPPC64::fcmpX(UGeckoInstruction inst)
   INSTRUCTION_START
   JITDISABLE(bJITFloatingPointOff);
   FALLBACK_IF(jo.fp_exceptions);
-  // fcmpu and fcmpo set FPSCR[FPCC].
-  INTERPRET_IF(m_fprf);
 
   const VSR a = fpr.R(inst.FA);
   const VSR b = fpr.R(inst.FB);
 
   XSCMPUDP(CRF::CR1, a, b);
+  // With FPRF, fcmpu and fcmpo set FPSCR[FPCC].
+  if (m_fprf)
+    SetFPCCFromHostFloatCompare(CRF::CR1);
   SetCRFieldFromHostFloatCompare(inst.CRFD, CRF::CR1);
 }
 

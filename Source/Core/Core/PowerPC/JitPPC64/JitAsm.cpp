@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "Common/CommonTypes.h"
+#include "Common/FloatUtils.h"
 #include "Common/JitRegister.h"
 #include "Common/MemoryUtil.h"
 #include "Common/PPC64Emitter.h"
@@ -232,6 +233,10 @@ void JitPPC64::GenerateAsm()
   GenerateSlowAccessRoutines();
   GenerateExceptionExitRoutine();
   GenerateQuantizedRoutines();
+  m_fprf_double_routine = GetCodePtr();
+  GenerateFPRFRoutine(false);
+  m_fprf_single_routine = GetCodePtr();
+  GenerateFPRFRoutine(true);
   Common::JitRegister::Register(routines_start, GetCodePtr(), "JIT_SlowAccess");
 
   FlushIcache();
@@ -253,4 +258,64 @@ void JitPPC64::GenerateExceptionExitRoutine()
   STW(GPR::R3, PPC_REG, PPCSTATE_OFF(downcount));
   LWZ(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(npc));
   B(dispatcher);
+}
+
+void JitPPC64::GenerateFPRFRoutine(bool single)
+{
+  // Sets FPSCR[FPRF] for the double in R3 as Common::ClassifyDouble does, or, for a value rounded
+  // to single precision, as Common::ClassifyFloat does for it: such a value is a single denormal
+  // when its exponent is below the single minimum, 2^-126. Uses R0, R3, R4, CR0 and CR1.
+  RLDICL(GPR::R4, GPR::R3, 12, 53);  // Exponent
+  SLDI(GPR::R0, GPR::R3, 12);        // Fraction, nonzero or not
+  SRDI(GPR::R3, GPR::R3, 63);        // Sign
+  CMPDI(CRF::CR1, GPR::R0, 0);
+
+  CMPLWI(CRF::CR0, GPR::R4, 0x7FF);
+  const FixupBranch special = BC(CCFlags::EQ, CRF::CR0);
+  CMPLWI(CRF::CR0, GPR::R4, single ? 1023 - 126 : 1);
+  const FixupBranch tiny = BC(CCFlags::LT, CRF::CR0);
+
+  // Normal: PPC_FPCLASS_PN or PPC_FPCLASS_NN.
+  static_assert(Common::PPC_FPCLASS_NN == Common::PPC_FPCLASS_PN + 4);
+  SLWI(GPR::R4, GPR::R3, 2);
+  ADDI(GPR::R4, GPR::R4, Common::PPC_FPCLASS_PN);
+  const FixupBranch normal_done = B();
+
+  // Zero or denormal: for a single, any nonzero value here is a denormal.
+  SetJumpTarget(tiny);
+  if (single)
+  {
+    OR(GPR::R0, GPR::R0, GPR::R4);
+    CMPDI(CRF::CR1, GPR::R0, 0);
+  }
+  const FixupBranch denormal = BC(CCFlags::NE, CRF::CR1);
+  static_assert(Common::PPC_FPCLASS_NZ == Common::PPC_FPCLASS_PZ + 16);
+  SLWI(GPR::R4, GPR::R3, 4);
+  ADDI(GPR::R4, GPR::R4, Common::PPC_FPCLASS_PZ);
+  const FixupBranch zero_done = B();
+  SetJumpTarget(denormal);
+  static_assert(Common::PPC_FPCLASS_ND == Common::PPC_FPCLASS_PD + 4);
+  SLWI(GPR::R4, GPR::R3, 2);
+  ADDI(GPR::R4, GPR::R4, Common::PPC_FPCLASS_PD);
+  const FixupBranch denormal_done = B();
+
+  // Infinity or NaN.
+  SetJumpTarget(special);
+  const FixupBranch nan = BC(CCFlags::NE, CRF::CR1);
+  static_assert(Common::PPC_FPCLASS_NINF == Common::PPC_FPCLASS_PINF + 4);
+  SLWI(GPR::R4, GPR::R3, 2);
+  ADDI(GPR::R4, GPR::R4, Common::PPC_FPCLASS_PINF);
+  const FixupBranch infinity_done = B();
+  SetJumpTarget(nan);
+  LI(GPR::R4, Common::PPC_FPCLASS_QNAN);
+
+  SetJumpTarget(normal_done);
+  SetJumpTarget(zero_done);
+  SetJumpTarget(denormal_done);
+  SetJumpTarget(infinity_done);
+  // FPRF is FPSCR's bits 12-16.
+  LWZ(GPR::R0, PPC_REG, PPCSTATE_OFF(fpscr));
+  RLWIMI(GPR::R0, GPR::R4, 12, 15, 19);
+  STW(GPR::R0, PPC_REG, PPCSTATE_OFF(fpscr));
+  BLR();
 }

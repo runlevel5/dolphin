@@ -20,7 +20,6 @@ void JitPPC64::ps_arith(UGeckoInstruction inst)
   JITDISABLE(bJITPairedOff);
   INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions || (jo.div_by_zero_exceptions && inst.SUBOP5 == 18));
-  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   // ps_muls0, ps_muls1, ps_madds0 and ps_madds1 are ps_mul and ps_madd, with one half of C for
   // both halves.
@@ -68,6 +67,8 @@ void JitPPC64::ps_arith(UGeckoInstruction inst)
   EmitFloatArith(op5, true, round_c, result0, a, b, c_for_half_0);
   EmitFloatArith(op5, true, round_c, result1, a1, b1, c_for_half_1);
   XXPERMDI(d, result0, result1, 0);
+  if (m_fprf && js.op->wantsFPRF)
+    SetFPRF(result0, true);
 }
 
 void JitPPC64::ps_sumX(UGeckoInstruction inst)
@@ -76,7 +77,6 @@ void JitPPC64::ps_sumX(UGeckoInstruction inst)
   JITDISABLE(bJITPairedOff);
   INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions);
-  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   // ps_sum0: a.ps0 + b.ps1, c.ps1; ps_sum1: c.ps0, a.ps0 + b.ps1. Both halves are rounded to single
   // precision.
@@ -101,6 +101,9 @@ void JitPPC64::ps_sumX(UGeckoInstruction inst)
     XXPERMDI(d, other, sum, 0);
   else
     XXPERMDI(d, sum, other, 0);
+  // Of the sum, as ps_sum0 sets it for ps0 and ps_sum1 for ps1.
+  if (m_fprf && js.op->wantsFPRF)
+    SetFPRF(sum, true);
 }
 
 void JitPPC64::ps_sel(UGeckoInstruction inst)
@@ -126,8 +129,6 @@ void JitPPC64::ps_cmpXX(UGeckoInstruction inst)
   INSTRUCTION_START
   JITDISABLE(bJITPairedOff);
   FALLBACK_IF(jo.fp_exceptions);
-  // These set FPSCR[FPCC].
-  INTERPRET_IF(m_fprf);
 
   // ps_cmpu0 and ps_cmpo0 compare ps0, ps_cmpu1 and ps_cmpo1 ps1.
   const bool half1 = inst.SUBOP10 == 64 || inst.SUBOP10 == 96;
@@ -146,5 +147,8 @@ void JitPPC64::ps_cmpXX(UGeckoInstruction inst)
   {
     XSCMPUDP(CRF::CR1, a, b);
   }
+  // With FPRF, these set FPSCR[FPCC].
+  if (m_fprf)
+    SetFPCCFromHostFloatCompare(CRF::CR1);
   SetCRFieldFromHostFloatCompare(inst.CRFD, CRF::CR1);
 }

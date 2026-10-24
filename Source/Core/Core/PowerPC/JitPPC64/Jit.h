@@ -228,6 +228,7 @@ private:
   void GenerateSlowAccessRoutines();
   void GenerateExceptionExitRoutine();
   void GenerateQuantizedRoutines();
+  void GenerateFPRFRoutine(bool single);
   void QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store, bool indexed, bool update,
                                      u32 gqr_index, bool single);
   void GenerateQuantizedLoadRoutine(u32 type, bool single);
@@ -259,6 +260,8 @@ private:
   // Rounds the mantissa of a multiplicand to 25 bits, as Force25Bit.
   void Force25Bit(PPC64Gen::VSR out, PPC64Gen::VSR in);
   // Sets a CR field from the host CR field that a floating-point comparison set.
+  void SetFPRF(PPC64Gen::VSR value, bool single);
+  void SetFPCCFromHostFloatCompare(PPC64Gen::CRF host_field);
   void SetCRFieldFromHostFloatCompare(u32 field, PPC64Gen::CRF host_field);
   // Converts the double in the low 64 bits of value to single precision, as ConvertToSingle.
   void ConvertDoubleToSingle(PPC64Gen::GPR value);
@@ -354,6 +357,9 @@ private:
   // Quantized loads and stores whose GQR isn't known when compiling, indexed by W << 3 | type.
   std::array<const u8*, 16> m_quantized_load_routines{};
   std::array<const u8*, 16> m_quantized_store_routines{};
+  // Set FPSCR[FPRF] for the value in R3, double or rounded to single precision.
+  const u8* m_fprf_double_routine = nullptr;
+  const u8* m_fprf_single_routine = nullptr;
 
   std::unique_ptr<HostDisassembler> m_disassembler;
 };
