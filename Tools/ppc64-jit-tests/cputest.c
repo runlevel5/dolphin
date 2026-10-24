@@ -951,6 +951,72 @@ static void TestPairedSingles(void)
   End("paired-singles");
 }
 
+// Paired-single fused multiply-adds and multiplies on the cases of TestFusedMultiplyAddCases, in
+// both halves, with the halves made from doubles, so that frC can be a NaN that changes when it's
+// rounded to 25 bits.
+#define PSOPD(insn)                                                                                \
+  do                                                                                               \
+  {                                                                                                \
+    double r_, s_;                                                                                 \
+    u32 c_;                                                                                        \
+    double out[2];                                                                                 \
+    asm volatile("mtfsf 0xff,%3\n\tlfd 1,0(%4)\n\tlfd 4,8(%4)\n\tps_merge00 1,1,4\n\t"             \
+                 "lfd 2,16(%4)\n\tlfd 4,24(%4)\n\tps_merge00 2,2,4\n\t"                            \
+                 "lfd 3,32(%4)\n\tlfd 4,40(%4)\n\tps_merge00 3,3,4\n\t" insn                       \
+                 "\n\tmffs %1\n\tmfcr %2\n\tstfd %0,0(%5)\n\tps_merge11 %0,%0,%0\n\tstfd %0,8(%5)" \
+                 : "=&f"(r_), "=&f"(s_), "=&r"(c_)                                                 \
+                 : "f"(fpscr), "b"(inputs), "b"(out)                                               \
+                 : "fr1", "fr2", "fr3", "fr4", "cr1", "cr2", "memory");                            \
+    Record64(insn, Bits(out[0]), Bits(out[1]), (c_ >> 20) & 0xFFF);                                \
+    Mix64(Bits(s_) & FPSCR_MASK);                                                                  \
+  } while (0)
+
+static void TestPairedFusedMultiplyAddCases(void)
+{
+  static const u32 ties[][3] = {
+      // a, b, c
+      {0x42480000, 0x1b1c72a0, 0xbc88cc38}, {0xc1b4fd47, 0x29ff8325, 0xbf019c77},
+      {0xc2118627, 0xb47a1e02, 0xc13b95b2}, {0xbc790257, 0xaabfede6, 0xc3471e58},
+      {0xbd881ae9, 0x2a9fca37, 0xc289d2bd}, {0x4280dc53, 0xb3d01405, 0x416a9cb9},
+  };
+  static const u64 nans[] = {
+      0x7FF800000FFFFFFF, 0x7FF4000008000000, 0xFFF000000FFFFFFF, 0x7FF0000000000001,
+  };
+  const u32 count = sizeof(ties) / sizeof(ties[0]);
+  double inputs[6] __attribute__((aligned(8)));
+  Begin();
+  const double fpscr = Double(0);
+  for (u32 i = 0; i < count; i++)
+  {
+    BeginIteration();
+    // a, b and c for half 0 are inputs[0], [2] and [4]; for half 1, [1], [3] and [5].
+    for (u32 h = 0; h < 2; h++)
+      for (u32 k = 0; k < 3; k++)
+        inputs[2 * k + h] = FloatBits(ties[(i + h) % count][k]);
+    PSOPD("ps_madd %0,1,3,2");
+    PSOPD("ps_msub %0,1,3,2");
+    PSOPD("ps_nmadd %0,1,3,2");
+    PSOPD("ps_nmsub %0,1,3,2");
+    PSOPD("ps_madds0 %0,1,3,2");
+    PSOPD("ps_madds1 %0,1,3,2");
+  }
+  for (u32 i = 0; i < 2 * sizeof(nans) / sizeof(nans[0]); i++)
+  {
+    BeginIteration();
+    inputs[0] = (i & 1) ? 1.0 : 0.0;
+    inputs[1] = (i & 1) ? 0.0 : 1.0;
+    inputs[2] = inputs[3] = 2.0;
+    inputs[4] = Double(nans[i / 2]);
+    inputs[5] = Double(nans[(i / 2 + 1) % 4]);
+    PSOPD("ps_madd %0,1,3,2");
+    PSOPD("ps_nmsub %0,1,3,2");
+    PSOPD("ps_madds1 %0,1,3,2");
+    PSOPD("ps_mul %0,1,3");
+    PSOPD("ps_muls0 %0,1,3");
+  }
+  End("paired-fma-cases");
+}
+
 #define GQR(n) (912 + (n))
 
 static void TestQuantizedLoadsAndStores(void)
@@ -1081,6 +1147,7 @@ int main(void)
   TestFusedMultiplyAddCases();
   TestFloatLoadsAndStores();
   TestPairedSingles();
+  TestPairedFusedMultiplyAddCases();
   TestQuantizedLoadsAndStores();
   TestSelfModifyingCode();
   TestExceptions();

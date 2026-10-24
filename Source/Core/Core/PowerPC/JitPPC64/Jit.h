@@ -150,6 +150,10 @@ public:
   void fcmpX(UGeckoInstruction inst);
 
   // Paired singles
+  void ps_arith(UGeckoInstruction inst);
+  void ps_sumX(UGeckoInstruction inst);
+  void ps_sel(UGeckoInstruction inst);
+  void ps_cmpXX(UGeckoInstruction inst);
   void ps_mergeXX(UGeckoInstruction inst);
 
   // System registers
@@ -212,6 +216,10 @@ private:
   void SetCRFieldFromHostFloatCompare(u32 field, PPC64Gen::CRF host_field);
   // Converts the double in the low 64 bits of value to single precision, as ConvertToSingle.
   void ConvertDoubleToSingle(PPC64Gen::GPR value);
+  // Computes the result of fp_arith's operation op5 (SUBOP5) into result, from doubleword 0 of a,
+  // b and c, rounded to single precision if single, as the interpreter does.
+  void EmitFloatArith(u32 op5, bool single, bool round_c, PPC64Gen::VSR result, PPC64Gen::VSR a,
+                      PPC64Gen::VSR b, PPC64Gen::VSR c);
 
   void HLEFunction(u32 hook_index);
   bool HandleFunctionHooking(u32 address);

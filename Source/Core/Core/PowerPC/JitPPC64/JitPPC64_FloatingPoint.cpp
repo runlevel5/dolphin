@@ -136,30 +136,14 @@ void JitPPC64::SetCRFieldFromHostFloatCompare(u32 field, CRF host_field)
   SetCRField(field, tmp);
 }
 
-void JitPPC64::fp_arith(UGeckoInstruction inst)
+void JitPPC64::EmitFloatArith(u32 op5, bool single, bool round_c, VSR result, VSR a, VSR b, VSR c)
 {
-  INSTRUCTION_START
-  JITDISABLE(bJITFloatingPointOff);
-  FALLBACK_IF(inst.Rc);
-  FALLBACK_IF(jo.fp_exceptions || (jo.div_by_zero_exceptions && inst.SUBOP5 == 18));
-  FALLBACK_IF(m_fprf && js.op->wantsFPRF);
-
-  const u32 op5 = inst.SUBOP5;
-  const bool single = inst.OPCD == 59;
   const bool use_c = op5 >= 25;  // fmul and the fused multiply-adds
   const bool use_b = op5 != 25;  // fmul doesn't use B
   const bool fma = use_b && use_c;
   const bool negate = op5 == 30 || op5 == 31;
   const bool subtract_b = op5 == 28 || op5 == 30;
-  const bool round_c = single && use_c && !js.op->fprIsSingle[inst.FC];
 
-  const VSR a = fpr.R(inst.FA);
-  const VSR b = use_b ? fpr.R(inst.FB) : VSR::VS0;
-  const VSR c = use_c ? fpr.R(inst.FC) : VSR::VS0;
-  // Double precision instructions only write ps0.
-  const VSR d = fpr.RW(inst.FD, !single);
-
-  const auto result = fpr.GetScopedReg();
   PPC64FPRCache::ScopedReg rounded_c;
   VSR c_operand = c;
   if (round_c)
@@ -279,13 +263,39 @@ void JitPPC64::fp_arith(UGeckoInstruction inst)
       XSNEGDP(result, result);
       SetJumpTarget(nan);
     }
-    XXPERMDI(d, result, result, 0);
   }
   else
   {
     ForceDouble(result);
-    XXPERMDI(d, result, d, 1);
   }
+}
+
+void JitPPC64::fp_arith(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITFloatingPointOff);
+  FALLBACK_IF(inst.Rc);
+  FALLBACK_IF(jo.fp_exceptions || (jo.div_by_zero_exceptions && inst.SUBOP5 == 18));
+  FALLBACK_IF(m_fprf && js.op->wantsFPRF);
+
+  const u32 op5 = inst.SUBOP5;
+  const bool single = inst.OPCD == 59;
+  const bool use_c = op5 >= 25;  // fmul and the fused multiply-adds
+  const bool use_b = op5 != 25;  // fmul doesn't use B
+  const bool round_c = single && use_c && !js.op->fprIsSingle[inst.FC];
+
+  const VSR a = fpr.R(inst.FA);
+  const VSR b = use_b ? fpr.R(inst.FB) : VSR::VS0;
+  const VSR c = use_c ? fpr.R(inst.FC) : VSR::VS0;
+  // Double precision instructions only write ps0.
+  const VSR d = fpr.RW(inst.FD, !single);
+
+  const auto result = fpr.GetScopedReg();
+  EmitFloatArith(op5, single, round_c, result, a, b, c);
+  if (single)
+    XXPERMDI(d, result, result, 0);
+  else
+    XXPERMDI(d, result, d, 1);
 }
 
 void JitPPC64::fp_logic(UGeckoInstruction inst)
