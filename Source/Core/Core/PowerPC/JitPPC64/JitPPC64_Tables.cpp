@@ -26,8 +26,8 @@ constexpr std::array<JitPPC64OpTemplate, 54> s_primary_table{{
     {16, &JitPPC64::bcx},  // bcx
     {18, &JitPPC64::bx},   // bx
 
-    {3, &JitPPC64::FallBackToInterpreter},  // twi
-    {17, &JitPPC64::sc},                    // sc
+    {3, &JitPPC64::twx},  // twi
+    {17, &JitPPC64::sc},  // sc
 
     {7, &JitPPC64::mulli},   // mulli
     {8, &JitPPC64::subfic},  // subfic
@@ -279,7 +279,7 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {595, &JitPPC64::InterpretInstruction},  // mfsr
     {659, &JitPPC64::InterpretInstruction},  // mfsrin
 
-    {4, &JitPPC64::FallBackToInterpreter},    // tw
+    {4, &JitPPC64::twx},                      // tw
     {598, &JitPPC64::DoNothing},              // sync
     {982, &JitPPC64::FallBackToInterpreter},  // icbi
 

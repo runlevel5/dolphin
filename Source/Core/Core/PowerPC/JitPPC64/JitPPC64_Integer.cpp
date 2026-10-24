@@ -8,9 +8,12 @@
 
 #include "Core/PowerPC/JitPPC64/Jit.h"
 
+#include <vector>
+
 #include "Common/CommonTypes.h"
 #include "Common/PPC64Emitter.h"
 #include "Core/PowerPC/ConditionRegister.h"
+#include "Core/PowerPC/Interpreter/ExceptionUtils.h"
 #include "Core/PowerPC/PPCTables.h"
 #include "Core/PowerPC/PowerPC.h"
 
@@ -663,4 +666,70 @@ void JitPPC64::cmpli(UGeckoInstruction inst)
 
   CMPLWI(CRF::CR1, gpr.R(inst.RA), inst.UIMM);
   SetCRFieldFromHostCompare(inst.CRFD, CRF::CR1);
+}
+
+void JitPPC64::twx(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITIntegerOff);
+
+  // As the interpreter: trap if any condition that TO selects holds, comparing rA with rB, or for
+  // twi with the immediate, signed (LT, GT, EQ) and unsigned (LT, GT).
+  const u32 to = inst.TO;
+  std::vector<FixupBranch> traps;
+  if (to == 0x1F)
+  {
+    traps.push_back(B());
+  }
+  else
+  {
+    const GPR a = gpr.R(inst.RA);
+    if (inst.OPCD == 3)
+    {
+      const auto b = gpr.GetScopedReg();
+      MOVI2R(b, static_cast<u32>(static_cast<s32>(inst.SIMM_16)));
+      CMPW(CRF::CR0, a, b);
+      CMPLW(CRF::CR1, a, b);
+    }
+    else
+    {
+      CMPW(CRF::CR0, a, gpr.R(inst.RB));
+      CMPLW(CRF::CR1, a, gpr.R(inst.RB));
+    }
+    if (to & 0x10)
+      traps.push_back(BCFar(CCFlags::LT, CRF::CR0));
+    if (to & 0x08)
+      traps.push_back(BCFar(CCFlags::GT, CRF::CR0));
+    if (to & 0x04)
+      traps.push_back(BCFar(CCFlags::EQ, CRF::CR0));
+    if (to & 0x02)
+      traps.push_back(BCFar(CCFlags::LT, CRF::CR1));
+    if (to & 0x01)
+      traps.push_back(BCFar(CCFlags::GT, CRF::CR1));
+  }
+
+  if (!traps.empty())
+  {
+    SwitchToFarCode();
+    for (const FixupBranch& trap : traps)
+      SetJumpTarget(trap);
+    FlushRegisters(FlushMode::MaintainState);
+    {
+      const auto tmp = gpr.GetScopedReg();
+      LWZ(tmp, PPC_REG, PPCSTATE_OFF(Exceptions));
+      ORI(tmp, tmp, EXCEPTION_PROGRAM);
+      STW(tmp, PPC_REG, PPCSTATE_OFF(Exceptions));
+      MOVI2R(tmp, static_cast<u32>(ProgramExceptionCause::Trap));
+      STW(tmp, PPC_REG, PPCSTATE_OFF_SPR(SPR_SRR1));
+    }
+    WriteTakeExceptionExit();
+    SwitchToNearCode();
+  }
+
+  // The analyzer continues the block after a trap only with conditional continue.
+  if (!analyzer.HasOption(PPCAnalyst::PPCAnalyzer::OPTION_CONDITIONAL_CONTINUE))
+  {
+    FlushRegisters(FlushMode::All);
+    WriteExit(js.compilerPC + 4);
+  }
 }

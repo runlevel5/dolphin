@@ -1625,8 +1625,11 @@ static void TestExceptions(void)
   for (u32 i = 0; i < 20; i++)
   {
     const u32 a = Random() % 4;
-    // Traps: unconditional, and conditional on a.
-    asm volatile("trap\n\ttwi 4,%0,1\n\ttwi 8,%0,2\n\ttwi 16,%0,3\n\ttw 31,%0,%0" : : "r"(a));
+    // Traps: unconditional, and conditional on a, signed and unsigned.
+    asm volatile("trap\n\ttwi 4,%0,1\n\ttwi 8,%0,2\n\ttwi 16,%0,3\n\ttw 31,%0,%0\n\t"
+                 "twi 2,%0,2\n\ttwi 1,%0,1\n\ttw 3,%0,%1"
+                 :
+                 : "r"(a), "r"(Random() % 4));
     asm volatile("sc" : : : "memory");
     if (i % 5 == 0)
     {

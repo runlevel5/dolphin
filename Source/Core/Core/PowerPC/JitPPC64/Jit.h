@@ -128,6 +128,7 @@ public:
   void subfzex(UGeckoInstruction inst);
   void subfic(UGeckoInstruction inst);
   void negx(UGeckoInstruction inst);
+  void twx(UGeckoInstruction inst);
   void mulli(UGeckoInstruction inst);
   void mullwx(UGeckoInstruction inst);
   void mulhwx(UGeckoInstruction inst);
