@@ -1,5 +1,6 @@
 #!/bin/bash
-# Runs a game at normal speed with the Null video backend and dual core, and prints how busy the CPU
+# Runs a game at normal speed with the Null video backend and dual core (unless its settings say
+# otherwise, as some games need single core), and prints how busy the CPU (or CPU-GPU)
 # thread was. With perf, records a profile of the CPU thread, with JIT blocks named by a perf map.
 # Usage: bench.sh <dolphin-emu-nogui> <game> <core number> <seconds> [perf.data]
 set -u
@@ -22,7 +23,7 @@ pid=$!
 
 # Skip the boot.
 sleep 10
-cpu_thread=$(grep -l "^CPU thread$" /proc/$pid/task/*/comm | head -1 | cut -d/ -f5)
+cpu_thread=$(grep -l -E "^CPU(-GPU)? thread$" /proc/$pid/task/*/comm | head -1 | cut -d/ -f5)
 ticks() { awk '{ print $14 + $15 }' /proc/$pid/task/$cpu_thread/stat; }
 start=$(ticks)
 if [ -n "$perf_data" ]; then
