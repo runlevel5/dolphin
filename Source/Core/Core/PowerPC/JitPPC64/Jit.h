@@ -169,6 +169,8 @@ public:
   void mfcr(UGeckoInstruction inst);
   void mtcrf(UGeckoInstruction inst);
   void mcrf(UGeckoInstruction inst);
+  void mfmsr(UGeckoInstruction inst);
+  void mtmsr(UGeckoInstruction inst);
   void crXXX(UGeckoInstruction inst);
 
   // The stack frame saves the scratch registers, which are volatile, around calls from slow paths.
