@@ -112,6 +112,7 @@ public:
   void bcx(UGeckoInstruction inst);
   void bcctrx(UGeckoInstruction inst);
   void bclrx(UGeckoInstruction inst);
+  void rfi(UGeckoInstruction inst);
 
   // Integer
   void arith_imm(UGeckoInstruction inst);
@@ -184,6 +185,8 @@ public:
   void mcrf(UGeckoInstruction inst);
   void mfmsr(UGeckoInstruction inst);
   void EmitTimeBase(PPC64Gen::GPR out);
+  void EmitMSRUpdated(PPC64Gen::GPR msr);
+  void EmitPendingPageTableUpdate();
   void mtmsr(UGeckoInstruction inst);
   void crXXX(UGeckoInstruction inst);
 

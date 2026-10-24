@@ -213,3 +213,33 @@ void JitPPC64::bclrx(UGeckoInstruction inst)
     WriteExit(js.compilerPC + 4);
   }
 }
+
+void JitPPC64::rfi(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITBranchOff);
+
+  // As the interpreter, without the privilege check, as the other JITs: restore the bits of MSR
+  // that SRR1 saves, clear MSR[13], and return to SRR0, taking a pending exception.
+  FlushRegisters(FlushMode::All);
+  constexpr u32 mask = 0x87C0FFFF;
+  constexpr u32 clear_msr13 = 0xFFFBFFFF;
+  {
+    const auto msr = gpr.GetScopedReg();
+    const auto tmp = gpr.GetScopedReg();
+    const auto srr1 = gpr.GetScopedReg();
+    LWZ(msr, PPC_REG, PPCSTATE_OFF(msr));
+    MOVI2R(tmp, ~mask & clear_msr13);
+    AND(msr, msr, tmp);
+    LWZ(srr1, PPC_REG, PPCSTATE_OFF_SPR(SPR_SRR1));
+    MOVI2R(tmp, mask & clear_msr13);
+    AND(srr1, srr1, tmp);
+    OR(msr, msr, srr1);
+    STW(msr, PPC_REG, PPCSTATE_OFF(msr));
+    EmitMSRUpdated(msr);
+  }
+  EmitPendingPageTableUpdate();
+
+  LWZ(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF_SPR(SPR_SRR0));
+  WriteExceptionExit(DISPATCHER_PC);
+}

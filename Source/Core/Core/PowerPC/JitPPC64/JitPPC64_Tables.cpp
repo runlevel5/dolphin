@@ -146,7 +146,7 @@ constexpr std::array<JitPPC64OpTemplate, 13> s_table19{{
     {150, &JitPPC64::DoNothing},  // isync
     {0, &JitPPC64::mcrf},         // mcrf
 
-    {50, &JitPPC64::FallBackToInterpreter},  // rfi
+    {50, &JitPPC64::rfi},  // rfi
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{

@@ -299,35 +299,44 @@ void JitPPC64::mtmsr(UGeckoInstruction inst)
   // Enabling floating-point exceptions (FE0, FE1) may raise one.
   FALLBACK_IF(jo.fp_exceptions);
 
-  // As PowerPCManager::MSRUpdated, without calls: switch the arena to MSR[DR]'s, and the block
-  // cache's feature flags to MSR[DR] and MSR[IR].
   const GPR s = gpr.R(inst.RS);
   STW(s, PPC_REG, PPCSTATE_OFF(msr));
-  {
-    auto& memory = m_system.GetMemory();
-    const auto physical = gpr.GetScopedReg();
-    MOVP2R(MEM_REG,
-           jo.fastmem_arena ? memory.GetLogicalBase() : memory.GetLogicalPageMappingsBase());
-    MOVP2R(physical,
-           jo.fastmem_arena ? memory.GetPhysicalBase() : memory.GetPhysicalPageMappingsBase());
-    ANDI_(GPR::R0, s, 1 << UReg_MSR{}.DR.StartBit());
-    ISEL(MEM_REG, physical, MEM_REG, CRBit(CRF::CR0, CCFlags::EQ));
-    STD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
-
-    static_assert(UReg_MSR{}.DR.StartBit() == 4);
-    static_assert(UReg_MSR{}.IR.StartBit() == 5);
-    static_assert(FEATURE_FLAG_MSR_DR == 1 << 0);
-    static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
-    const u32 other_feature_flags = m_ppc_state.feature_flags & ~0x3;
-    RLWINM(physical, s, 32 - 4, 30, 31);
-    if (other_feature_flags != 0)
-      ORI(physical, physical, static_cast<u16>(other_feature_flags));
-    STW(physical, PPC_REG, PPCSTATE_OFF(feature_flags));
-  }
-
+  EmitMSRUpdated(s);
   FlushRegisters(FlushMode::All);
+  EmitPendingPageTableUpdate();
 
-  // Turning on data translation applies page table updates made while it was off.
+  // Enabling external interrupts takes a pending one.
+  WriteExceptionExit(js.compilerPC + 4, true);
+}
+
+void JitPPC64::EmitMSRUpdated(GPR msr)
+{
+  // As PowerPCManager::MSRUpdated, without calls: switch the arena to MSR[DR]'s, and the block
+  // cache's feature flags to MSR[DR] and MSR[IR]. EmitPendingPageTableUpdate does the rest.
+  auto& memory = m_system.GetMemory();
+  const auto physical = gpr.GetScopedReg();
+  MOVP2R(MEM_REG, jo.fastmem_arena ? memory.GetLogicalBase() : memory.GetLogicalPageMappingsBase());
+  MOVP2R(physical,
+         jo.fastmem_arena ? memory.GetPhysicalBase() : memory.GetPhysicalPageMappingsBase());
+  ANDI_(GPR::R0, msr, 1 << UReg_MSR{}.DR.StartBit());
+  ISEL(MEM_REG, physical, MEM_REG, CRBit(CRF::CR0, CCFlags::EQ));
+  STD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
+
+  static_assert(UReg_MSR{}.DR.StartBit() == 4);
+  static_assert(UReg_MSR{}.IR.StartBit() == 5);
+  static_assert(FEATURE_FLAG_MSR_DR == 1 << 0);
+  static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
+  const u32 other_feature_flags = m_ppc_state.feature_flags & ~0x3;
+  RLWINM(physical, msr, 32 - 4, 30, 31);
+  if (other_feature_flags != 0)
+    ORI(physical, physical, static_cast<u16>(other_feature_flags));
+  STW(physical, PPC_REG, PPCSTATE_OFF(feature_flags));
+}
+
+void JitPPC64::EmitPendingPageTableUpdate()
+{
+  // Turning on data translation applies page table updates made while it was off. This calls
+  // C++, so the registers must have been flushed.
   LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF(msr));
   ANDI_(GPR::R3, GPR::R3, 1 << UReg_MSR{}.DR.StartBit());
   const FixupBranch dr_off = BC(CCFlags::EQ, CRF::CR0);
@@ -338,7 +347,4 @@ void JitPPC64::mtmsr(UGeckoInstruction inst)
   LD(MEM_REG, PPC_REG, PPCSTATE_OFF(mem_ptr));
   SetJumpTarget(not_pending);
   SetJumpTarget(dr_off);
-
-  // Enabling external interrupts takes a pending one.
-  WriteExceptionExit(js.compilerPC + 4, true);
 }
