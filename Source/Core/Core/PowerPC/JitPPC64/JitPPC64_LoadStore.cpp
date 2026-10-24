@@ -592,6 +592,72 @@ void JitPPC64::dcbx(UGeckoInstruction inst)
   SwitchToNearCode();
 }
 
+void JitPPC64::dcbz(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITLoadStoreOff);
+  FALLBACK_IF(m_accurate_cpu_cache_enabled);
+
+  // As JitArm64: zero the cache line, without the alignment exception that the interpreter raises
+  // when HID0[DCE] is off, as games turn the data cache on.
+  const auto addr = gpr.GetScopedReg();
+  if (inst.RA)
+    ADD(addr, gpr.R(inst.RA), gpr.R(inst.RB));
+  else
+    MR(addr, gpr.R(inst.RB));
+
+  // The low dcbz hack skips [0x80000000, 0x80008000), which is below 0x80008000 as signed.
+  FixupBranch low_dcbz;
+  if (m_low_dcbz_hack)
+  {
+    const auto tmp = gpr.GetScopedReg();
+    MOVI2R(tmp, 0x80008000);
+    CMPW(CRF::CR1, addr, tmp);
+    low_dcbz = BC(CCFlags::LT, CRF::CR1);
+  }
+  // Aligned to the line, zero-extended.
+  RLWINM(addr, addr, 0, 0, 26);
+
+  const auto emit_slow = [&] {
+    // The PC is used by memory checks and in logs.
+    MOVI2R(GPR::R12, js.compilerPC);
+    STW(GPR::R12, PPC_REG, PPCSTATE_OFF(pc));
+    MR(GPR::R12, addr);
+    const BitSet32 saved = SaveScratchRegs();
+    ABI_CallFunction(&PowerPC::ClearDCacheLineFromJit, &m_mmu, GPR::R12);
+    RestoreScratchRegs(saved);
+    if (jo.memcheck)
+      WriteConditionalExceptionExit(EXCEPTION_DSI, GPR::R12);
+  };
+
+  if (!jo.fastmem)
+  {
+    emit_slow();
+  }
+  else
+  {
+    // With fastmem, four doubleword stores to the line, which is in one page: the first faults if
+    // any does, and is patched into a branch to the slow path.
+    const auto host = gpr.GetScopedReg();
+    const auto zero = gpr.GetScopedReg();
+    ADD(host, MEM_REG, addr);
+    LI(zero, 0);
+    const u8* fault_pc = GetCodePtr();
+    for (s16 offset = 0; offset < 32; offset += 8)
+      STD(zero, host, offset);
+    const u8* fast_end = GetCodePtr();
+
+    SwitchToFarCode();
+    m_fault_to_handler[fault_pc] = GetCodePtr();
+    emit_slow();
+    B(fast_end);
+    SwitchToNearCode();
+  }
+
+  if (m_low_dcbz_hack)
+    SetJumpTarget(low_dcbz);
+}
+
 void JitPPC64::lmw_stmw(UGeckoInstruction inst)
 {
   INSTRUCTION_START

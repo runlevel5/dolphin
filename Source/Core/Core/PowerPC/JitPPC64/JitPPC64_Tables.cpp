@@ -199,13 +199,13 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {824, &JitPPC64::srawix},  // srawix
     {24, &JitPPC64::slwx},     // slwx
 
-    {54, &JitPPC64::dcbx},                     // dcbst
-    {86, &JitPPC64::dcbx},                     // dcbf
-    {246, &JitPPC64::DoNothing},               // dcbtst
-    {278, &JitPPC64::DoNothing},               // dcbt
-    {470, &JitPPC64::dcbx},                    // dcbi
-    {758, &JitPPC64::DoNothing},               // dcba
-    {1014, &JitPPC64::FallBackToInterpreter},  // dcbz
+    {54, &JitPPC64::dcbx},        // dcbst
+    {86, &JitPPC64::dcbx},        // dcbf
+    {246, &JitPPC64::DoNothing},  // dcbtst
+    {278, &JitPPC64::DoNothing},  // dcbt
+    {470, &JitPPC64::dcbx},       // dcbi
+    {758, &JitPPC64::DoNothing},  // dcba
+    {1014, &JitPPC64::dcbz},      // dcbz
 
     // load word
     {23, &JitPPC64::lXX},  // lwzx

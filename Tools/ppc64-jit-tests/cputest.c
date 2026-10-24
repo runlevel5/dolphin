@@ -449,8 +449,12 @@ static void TestLoadsAndStores(void)
     asm volatile("mr 28,%0\n\tmr 29,%1\n\tstswi 28,%2,7" : : "r"(value), "r"(index), "b"(&memory[150])
                  : "r28", "r29", "memory");
 
-    // Zero a cache block.
+    // Zero a cache block, and one through the uncached mirror, which the JIT zeroes through the MMU.
     asm volatile("dcbz 0,%0" : : "b"(&memory[128 + 32 * (Random() % 4)]) : "memory");
+    asm volatile("dcbz %0,%1"
+                 :
+                 : "b"((u32)memory | 0x40000000), "r"(32 * (Random() % 8) + Random() % 32)
+                 : "memory");
     MixMemory();
   }
   End("loads-stores");
@@ -1510,6 +1514,9 @@ static void TestDSI(void)
                    : "memory");
       RecordDSI("psq_stu gqr", (u32)(p_ - bad), 0);
     }
+
+    asm volatile("dcbz 0,%0" : : "b"(bad) : "memory");
+    RecordDSI("dcbz", 0, 0);
 
     // Load and store multiple words: the registers keep their values.
     {

@@ -152,6 +152,7 @@ public:
   void lXX(UGeckoInstruction inst);
   void stX(UGeckoInstruction inst);
   void dcbx(UGeckoInstruction inst);
+  void dcbz(UGeckoInstruction inst);
   void lmw_stmw(UGeckoInstruction inst);
 
   // Floating-point loads and stores
