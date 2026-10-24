@@ -149,6 +149,10 @@ public:
   void fctiwx(UGeckoInstruction inst);
   void fcmpX(UGeckoInstruction inst);
 
+  // Quantized loads and stores
+  void psq_lXX(UGeckoInstruction inst);
+  void psq_stXX(UGeckoInstruction inst);
+
   // Paired singles
   void ps_arith(UGeckoInstruction inst);
   void ps_sumX(UGeckoInstruction inst);
@@ -216,6 +220,11 @@ private:
   void SetCRFieldFromHostFloatCompare(u32 field, PPC64Gen::CRF host_field);
   // Converts the double in the low 64 bits of value to single precision, as ConvertToSingle.
   void ConvertDoubleToSingle(PPC64Gen::GPR value);
+  // Converts the double in the low 64 bits of value to single precision, as ConvertToSingleFTZ.
+  void ConvertDoubleToSingleFTZ(PPC64Gen::GPR value);
+  // Quantizes doubleword 0 of in into out for psq_st, as ScaleAndClamp.
+  void QuantizeHalf(PPC64Gen::GPR out, PPC64Gen::VSR in, u32 type_size, bool is_signed,
+                    s32 exponent);
   // Computes the result of fp_arith's operation op5 (SUBOP5) into result, from doubleword 0 of a,
   // b and c, rounded to single precision if single, as the interpreter does.
   void EmitFloatArith(u32 op5, bool single, bool round_c, PPC64Gen::VSR result, PPC64Gen::VSR a,

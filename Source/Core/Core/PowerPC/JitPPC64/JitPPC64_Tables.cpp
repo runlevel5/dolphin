@@ -78,10 +78,10 @@ constexpr std::array<JitPPC64OpTemplate, 54> s_primary_table{{
     {54, &JitPPC64::stfXX},  // stfd
     {55, &JitPPC64::stfXX},  // stfdu
 
-    {56, &JitPPC64::FallBackToInterpreter},  // psq_l
-    {57, &JitPPC64::FallBackToInterpreter},  // psq_lu
-    {60, &JitPPC64::FallBackToInterpreter},  // psq_st
-    {61, &JitPPC64::FallBackToInterpreter},  // psq_stu
+    {56, &JitPPC64::psq_lXX},   // psq_l
+    {57, &JitPPC64::psq_lXX},   // psq_lu
+    {60, &JitPPC64::psq_stXX},  // psq_st
+    {61, &JitPPC64::psq_stXX},  // psq_stu
 
     // missing: 0, 1, 2, 5, 6, 9, 22, 30, 58, 62
 }};
@@ -125,10 +125,10 @@ constexpr std::array<JitPPC64OpTemplate, 17> s_table4_2{{
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 4> s_table4_3{{
-    {6, &JitPPC64::FallBackToInterpreter},   // psq_lx
-    {7, &JitPPC64::FallBackToInterpreter},   // psq_stx
-    {38, &JitPPC64::FallBackToInterpreter},  // psq_lux
-    {39, &JitPPC64::FallBackToInterpreter},  // psq_stux
+    {6, &JitPPC64::psq_lXX},    // psq_lx
+    {7, &JitPPC64::psq_stXX},   // psq_stx
+    {38, &JitPPC64::psq_lXX},   // psq_lux
+    {39, &JitPPC64::psq_stXX},  // psq_stux
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 13> s_table19{{

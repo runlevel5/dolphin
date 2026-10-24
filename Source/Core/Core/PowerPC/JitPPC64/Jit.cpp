@@ -8,6 +8,7 @@
 #include <span>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #include <fmt/format.h>
 #include <fmt/ostream.h>
@@ -574,6 +575,40 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   gpr.Start();
   fpr.Start();
   m_ni_loaded = false;
+
+  // Take the GQRs that the block uses but doesn't set to keep the values they have now, as Jit64
+  // does, unless that turned out wrong for this block before. If they've changed when the block
+  // runs, have it compiled again without that.
+  js.constantGqrValid = BitSet8();
+  if (!js.pairedQuantizeAddresses.TestBit(js.blockStart / sizeof(UGeckoInstruction)))
+  {
+    const BitSet8 gqr_static = code_block.m_gqr_used & ~code_block.m_gqr_modified;
+    if (gqr_static)
+    {
+      std::vector<FixupBranch> changed;
+      for (const int gqr : gqr_static)
+      {
+        const u32 value = GQR(m_ppc_state, gqr);
+        js.constantGqr[gqr] = value;
+        LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF_SPR(SPR_GQR0 + gqr));
+        MOVI2R(GPR::R4, value);
+        CMPLW(CRF::CR1, GPR::R3, GPR::R4);
+        changed.push_back(BCFar(CCFlags::NE, CRF::CR1));
+      }
+
+      SwitchToFarCode();
+      for (const FixupBranch& branch : changed)
+        SetJumpTarget(branch);
+      MOVI2R(DISPATCHER_PC, js.blockStart);
+      STW(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(pc));
+      ABI_CallFunction(&JitInterface::CompileExceptionCheckFromJIT, &m_system.GetJitInterface(),
+                       JitInterface::ExceptionType::PairedQuantize);
+      B(dispatcher_no_check);
+      SwitchToNearCode();
+
+      js.constantGqrValid = gqr_static;
+    }
+  }
 
   // Conditionally add profiling code.
   if (IsProfilingEnabled())

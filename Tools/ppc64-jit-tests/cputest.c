@@ -1045,6 +1045,171 @@ static void TestQuantizedLoadsAndStores(void)
   End("quantized");
 }
 
+// Quantized loads and stores with GQRs that are set outside the function that uses them, so that
+// the JITs can compile them for their types and scales, and in all forms.
+static void __attribute__((noipa)) QuantizedOps(u8* buf, const double* values, double* out,
+                                                u8* stores, u32 index, u8** p, u8** q)
+{
+  u8* p_ = *p;
+  u8* q_ = *q;
+  asm volatile(
+      "psq_l 1,32(%[buf]),0,2\n\t"
+      "psq_l 2,40(%[buf]),1,2\n\t"
+      "stfd 1,64(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,72(%[out])\n\t"
+      "stfd 2,80(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,88(%[out])\n\t"
+      "lfd 3,32(%[values])\n\t"
+      "lfd 4,40(%[values])\n\t"
+      "ps_merge00 3,3,4\n\t"
+      "psq_st 3,32(%[stores]),0,2\n\t"
+      "psq_st 3,40(%[stores]),1,2\n\t"
+      "psq_l 1,48(%[buf]),0,3\n\t"
+      "psq_l 2,56(%[buf]),1,3\n\t"
+      "stfd 1,96(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,104(%[out])\n\t"
+      "stfd 2,112(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,120(%[out])\n\t"
+      "lfd 3,48(%[values])\n\t"
+      "lfd 4,56(%[values])\n\t"
+      "ps_merge00 3,3,4\n\t"
+      "psq_st 3,48(%[stores]),0,3\n\t"
+      "psq_st 3,56(%[stores]),1,3\n\t"
+      "psq_l 1,64(%[buf]),0,4\n\t"
+      "psq_l 2,72(%[buf]),1,4\n\t"
+      "stfd 1,128(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,136(%[out])\n\t"
+      "stfd 2,144(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,152(%[out])\n\t"
+      "lfd 3,64(%[values])\n\t"
+      "lfd 4,72(%[values])\n\t"
+      "ps_merge00 3,3,4\n\t"
+      "psq_st 3,64(%[stores]),0,4\n\t"
+      "psq_st 3,72(%[stores]),1,4\n\t"
+      "psq_l 1,80(%[buf]),0,5\n\t"
+      "psq_l 2,88(%[buf]),1,5\n\t"
+      "stfd 1,160(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,168(%[out])\n\t"
+      "stfd 2,176(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,184(%[out])\n\t"
+      "lfd 3,80(%[values])\n\t"
+      "lfd 4,88(%[values])\n\t"
+      "ps_merge00 3,3,4\n\t"
+      "psq_st 3,80(%[stores]),0,5\n\t"
+      "psq_st 3,88(%[stores]),1,5\n\t"
+      "psq_l 1,96(%[buf]),0,6\n\t"
+      "psq_l 2,104(%[buf]),1,6\n\t"
+      "stfd 1,192(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,200(%[out])\n\t"
+      "stfd 2,208(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,216(%[out])\n\t"
+      "lfd 3,96(%[values])\n\t"
+      "lfd 4,104(%[values])\n\t"
+      "ps_merge00 3,3,4\n\t"
+      "psq_st 3,96(%[stores]),0,6\n\t"
+      "psq_st 3,104(%[stores]),1,6\n\t"
+      "psq_l 1,112(%[buf]),0,7\n\t"
+      "psq_l 2,120(%[buf]),1,7\n\t"
+      "stfd 1,224(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,232(%[out])\n\t"
+      "stfd 2,240(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,248(%[out])\n\t"
+      "lfd 3,112(%[values])\n\t"
+      "lfd 4,120(%[values])\n\t"
+      "ps_merge00 3,3,4\n\t"
+      "psq_st 3,112(%[stores]),0,7\n\t"
+      "psq_st 3,120(%[stores]),1,7\n\t"
+      "psq_lx 1,%[buf],%[index],0,4\n\t"
+      "stfd 1,256(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,264(%[out])\n\t"
+      "psq_lux 1,%[p],%[index],1,5\n\t"
+      "stfd 1,272(%[out])\n\t"
+      "ps_merge11 1,1,1\n\t"
+      "stfd 1,280(%[out])\n\t"
+      "psq_stx 3,%[stores],%[index],0,6\n\t"
+      "psq_stux 3,%[q],%[index],1,7\n\t"
+      "psq_lu 2,8(%[p]),0,6\n\t"
+      "stfd 2,288(%[out])\n\t"
+      "ps_merge11 2,2,2\n\t"
+      "stfd 2,296(%[out])\n\t"
+      "psq_stu 3,16(%[q]),0,2\n\t"
+      : [p] "+b"(p_), [q] "+b"(q_)
+      : [buf] "b"(buf), [values] "b"(values), [out] "b"(out), [stores] "b"(stores),
+        [index] "r"(index)
+      : "fr1", "fr2", "fr3", "fr4", "memory");
+  *p = p_;
+  *q = q_;
+}
+
+static void __attribute__((noipa)) SetGQR3(u32 value)
+{
+  asm volatile("mtspr %0,%1" : : "i"(GQR(3)), "r"(value));
+}
+static void (*volatile set_gqr3)(u32) = SetGQR3;
+
+static void TestQuantizedCompiled(void)
+{
+  // GQR2-GQR7: load type and scale, store type and scale, with scales of both signs.
+  static const u32 gqrs[] = {
+      (0 << 16) | (0 << 24) | (0 << 0) | (0 << 8),    // float
+      (4 << 16) | (3 << 24) | (4 << 0) | (5 << 8),    // u8
+      (5 << 16) | (60 << 24) | (5 << 0) | (40 << 8),  // u16, negative scales
+      (6 << 16) | (31 << 24) | (6 << 0) | (2 << 8),   // s8
+      (7 << 16) | (8 << 24) | (7 << 0) | (63 << 8),   // s16
+      (7 << 16) | (33 << 24) | (4 << 0) | (16 << 8),  // s16 loads, u8 stores
+  };
+  static u8 buf[512] __attribute__((aligned(32)));
+  static u8 stores[512] __attribute__((aligned(32)));
+  static double values[16] __attribute__((aligned(16)));
+  static double out[48] __attribute__((aligned(16)));
+  asm volatile("mtspr %0,%1" : : "i"(GQR(2)), "r"(gqrs[0]));
+  asm volatile("mtspr %0,%1" : : "i"(GQR(3)), "r"(gqrs[1]));
+  asm volatile("mtspr %0,%1" : : "i"(GQR(4)), "r"(gqrs[2]));
+  asm volatile("mtspr %0,%1" : : "i"(GQR(5)), "r"(gqrs[3]));
+  asm volatile("mtspr %0,%1" : : "i"(GQR(6)), "r"(gqrs[4]));
+  asm volatile("mtspr %0,%1" : : "i"(GQR(7)), "r"(gqrs[5]));
+  Begin();
+  for (int i = 0; i < ITERATIONS; i++)
+  {
+    // Change a GQR near the end, so that the JITs find their assumption wrong. The call is
+    // indirect, so that the change isn't in the same block as the instructions that use it.
+    if (i == ITERATIONS - 100)
+      set_gqr3(gqrs[3]);
+    for (u32 j = 0; j < sizeof(buf); j += 4)
+      *(u32*)&buf[j] = Random();
+    for (int j = 0; j < 16; j++)
+    {
+      // Values in the ranges of the integer types, after scaling, and others.
+      const double v = FloatValue();
+      values[j] = (Random() & 1) ? v : (double)(s32)(Random() % 140000 - 70000) / 64.0;
+    }
+    u8* p = buf + 64;
+    u8* q = stores + 128;
+    const u32 index = 8 * (Random() % 8);
+    QuantizedOps(buf, values, out, stores, index, &p, &q);
+    for (int j = 0; j < 38; j++)
+      Mix64(Bits(out[j]));
+    for (u32 j = 0; j < 256; j += 4)
+      Mix(*(u32*)&stores[j]);
+    Mix((u32)(p - buf));
+    Mix((u32)(q - stores));
+  }
+  End("quantized-compiled");
+}
+
 static u32 code[8] __attribute__((aligned(32)));
 
 static void FlushCode(void* start, u32 size)
@@ -1149,6 +1314,7 @@ int main(void)
   TestPairedSingles();
   TestPairedFusedMultiplyAddCases();
   TestQuantizedLoadsAndStores();
+  TestQuantizedCompiled();
   TestSelfModifyingCode();
   TestExceptions();
   // Dolphin's printf takes the first word of the format string for a pointer to a this argument if
