@@ -183,6 +183,7 @@ public:
   void mtcrf(UGeckoInstruction inst);
   void mcrf(UGeckoInstruction inst);
   void mfmsr(UGeckoInstruction inst);
+  void EmitTimeBase(PPC64Gen::GPR out);
   void mtmsr(UGeckoInstruction inst);
   void crXXX(UGeckoInstruction inst);
 

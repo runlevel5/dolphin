@@ -5,7 +5,9 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/PPC64Emitter.h"
+#include "Core/CoreTiming.h"
 #include "Core/HW/Memmap.h"
+#include "Core/HW/SystemTimers.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -13,9 +15,90 @@
 
 using namespace PPC64Gen;
 
-// SPRs other than XER, LR and CTR have side effects or are privileged, so only these three are
-// accessed directly; the interpreter handles the others. It reads them without flushing the
-// registers; mtspr ends the block, which flushes them anyway.
+// SPRs whose reads and writes in the interpreter have no side effects are accessed directly in
+// PowerPCState, as are the time base halves, from CoreTiming; the interpreter handles the others.
+// It reads them without flushing the registers; mtspr ends the block, which flushes them anyway.
+// As in the other JITs, accesses to privileged SPRs in user mode don't raise exceptions.
+
+namespace
+{
+bool HasPlainRead(u32 spr)
+{
+  switch (spr)
+  {
+  case SPR_DEC:
+  case SPR_TL:
+  case SPR_TU:
+  case SPR_WPAR:
+  case SPR_XER:
+  case SPR_UPMC1:
+  case SPR_UPMC2:
+  case SPR_UPMC3:
+  case SPR_UPMC4:
+  case SPR_IABR:
+    return false;
+  default:
+    return true;
+  }
+}
+
+bool HasPlainWrite(u32 spr)
+{
+  switch (spr)
+  {
+  case SPR_SRR0:
+  case SPR_SRR1:
+  case SPR_SPRG0:
+  case SPR_SPRG1:
+  case SPR_SPRG2:
+  case SPR_SPRG3:
+  case SPR_DAR:
+  case SPR_DSISR:
+    return true;
+  default:
+    return spr >= SPR_GQR0 && spr < SPR_GQR0 + 8;
+  }
+}
+}  // namespace
+
+void JitPPC64::EmitTimeBase(GPR out)
+{
+  // As SystemTimersManager::GetFakeTimeBase, inline, since timer-heavy games read it often:
+  // fake_TB_start_value + (CoreTiming::GetTicks() - fake_TB_start_ticks) / TIMER_RATIO, where
+  // GetTicks() is global_timer + slice_length - int(float(downcount) * last_OC_factor_inverted).
+  // Like JitArm64, this doesn't add the cycles of the block so far.
+  auto& globals = m_system.GetCoreTiming().GetGlobals();
+  const auto base = gpr.GetScopedReg();
+  const auto tmp = gpr.GetScopedReg();
+  const auto cycles = fpr.GetScopedReg();
+  const auto factor = fpr.GetScopedReg();
+  MOVP2R(base, &globals);
+
+  LWA(tmp, PPC_REG, PPCSTATE_OFF(downcount));
+  MTVSRD(cycles, tmp);
+  XSCVSXDDP(cycles, cycles);
+  XSRSP(cycles, cycles);
+  LI(tmp, static_cast<s16>(offsetof(CoreTiming::Globals, last_OC_factor_inverted)));
+  LXSSPX(factor, base, tmp);
+  XSMULSP(cycles, cycles, factor);
+  XSCVDPSXDS(cycles, cycles);
+  MFVSRD(out, cycles);
+
+  LWA(tmp, base, static_cast<s16>(offsetof(CoreTiming::Globals, slice_length)));
+  SUBF(out, out, tmp);
+  LD(tmp, base, static_cast<s16>(offsetof(CoreTiming::Globals, global_timer)));
+  ADD(out, out, tmp);
+  LD(tmp, base, static_cast<s16>(offsetof(CoreTiming::Globals, fake_TB_start_ticks)));
+  SUBF(out, tmp, out);
+
+  // x / 12 = (x * 0xAAAAAAAAAAAAAAAB) >> 67
+  static_assert(SystemTimers::TIMER_RATIO == 12);
+  MOVI2R(tmp, 0xAAAAAAAAAAAAAAABULL);
+  MULHDU(out, out, tmp);
+  SRDI(out, out, 3);
+  LD(tmp, base, static_cast<s16>(offsetof(CoreTiming::Globals, fake_TB_start_value)));
+  ADD(out, out, tmp);
+}
 
 void JitPPC64::mfspr(UGeckoInstruction inst)
 {
@@ -29,6 +112,21 @@ void JitPPC64::mfspr(UGeckoInstruction inst)
   case SPR_CTR:
     LWZ(gpr.RW(inst.RD), PPC_REG, PPCSTATE_OFF_SPR(spr));
     break;
+
+  case SPR_TL:
+  case SPR_TU:
+  {
+    // The interpreter also updates both halves in PowerPCState.
+    const auto tb = gpr.GetScopedReg();
+    EmitTimeBase(tb);
+    static_assert(PPCSTATE_OFF_SPR(SPR_TU) == PPCSTATE_OFF_SPR(SPR_TL) + 4);
+    STD(tb, PPC_REG, PPCSTATE_OFF_SPR(SPR_TL));
+    if (spr == SPR_TU)
+      SRDI(gpr.RW(inst.RD), tb, 32);
+    else
+      MR(gpr.RW(inst.RD), tb);
+    break;
+  }
 
   case SPR_XER:
   {
@@ -44,7 +142,10 @@ void JitPPC64::mfspr(UGeckoInstruction inst)
   }
 
   default:
-    InterpretInstruction(inst);
+    if (HasPlainRead(spr))
+      LWZ(gpr.RW(inst.RD), PPC_REG, PPCSTATE_OFF_SPR(spr));
+    else
+      InterpretInstruction(inst);
     break;
   }
 }
@@ -78,7 +179,10 @@ void JitPPC64::mtspr(UGeckoInstruction inst)
   }
 
   default:
-    FallBackToInterpreter(inst);
+    if (HasPlainWrite(spr))
+      STW(gpr.R(inst.RD), PPC_REG, PPCSTATE_OFF_SPR(spr));
+    else
+      FallBackToInterpreter(inst);
     break;
   }
 }

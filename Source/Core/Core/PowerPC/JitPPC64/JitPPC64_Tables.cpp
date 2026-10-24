@@ -274,7 +274,7 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {242, &JitPPC64::FallBackToInterpreter},  // mtsrin
     {339, &JitPPC64::mfspr},                  // mfspr
     {467, &JitPPC64::mtspr},                  // mtspr
-    {371, &JitPPC64::InterpretInstruction},   // mftb
+    {371, &JitPPC64::mfspr},                  // mftb
     {512, &JitPPC64::InterpretInstruction},   // mcrxr
     {595, &JitPPC64::FallBackToInterpreter},  // mfsr
     {659, &JitPPC64::FallBackToInterpreter},  // mfsrin
