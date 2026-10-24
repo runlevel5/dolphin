@@ -266,6 +266,18 @@ void PPC64FPRCache::StoreIfDirty(u32 preg)
   guest.dirty = false;
 }
 
+void PPC64FPRCache::EmitStoreValue(u32 preg)
+{
+  if (m_guest[preg].bound)
+    Store(m_guest[preg].host, preg);
+}
+
+void PPC64FPRCache::EmitLoadValue(u32 preg)
+{
+  if (m_guest[preg].bound)
+    Load(m_guest[preg].host, preg);
+}
+
 void PPC64FPRCache::Discard(u32 preg)
 {
   GuestReg& guest = m_guest[preg];

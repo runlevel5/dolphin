@@ -1038,6 +1038,16 @@ static void TestFPSCRAndRecordForms(void)
     double e = a;
     asm volatile("fadd %0,%0,%1\n\tfres %0,%2\n\tfadd %0,%0,%1" : "+f"(e) : "f"(c), "f"(b));
     Record64("fres", Bits(e), 0, 0);
+    // fres writes both halves, frsqrte only ps0.
+    double e1;
+    asm volatile("ps_merge00 %0,%2,%2\n\tfres %0,%3\n\tps_merge11 %1,%0,%0"
+                 : "=&f"(e), "=f"(e1)
+                 : "f"(c), "f"(b));
+    Record64("fres ps1", Bits(e), Bits(e1), 0);
+    asm volatile("ps_merge00 %0,%2,%2\n\tfrsqrte %0,%3\n\tps_merge11 %1,%0,%0"
+                 : "=&f"(e), "=f"(e1)
+                 : "f"(c), "f"(b));
+    Record64("frsqrte ps1", Bits(e), Bits(e1), 0);
     const u32 gqr = Random();
     asm volatile("mtspr %1,%0" : : "r"(gqr), "i"(915));
     u32 y = Random(), z;

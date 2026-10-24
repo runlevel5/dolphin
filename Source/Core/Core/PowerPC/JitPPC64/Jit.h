@@ -164,6 +164,8 @@ public:
   void fp_logic(UGeckoInstruction inst);
   void fselx(UGeckoInstruction inst);
   void frspx(UGeckoInstruction inst);
+  void fresx(UGeckoInstruction inst);
+  void frsqrtex(UGeckoInstruction inst);
   void fctiwx(UGeckoInstruction inst);
   void fcmpX(UGeckoInstruction inst);
 
@@ -174,6 +176,8 @@ public:
   // Paired singles
   void ps_arith(UGeckoInstruction inst);
   void ps_sumX(UGeckoInstruction inst);
+  void ps_res(UGeckoInstruction inst);
+  void ps_rsqrte(UGeckoInstruction inst);
   void ps_sel(UGeckoInstruction inst);
   void ps_cmpXX(UGeckoInstruction inst);
   void ps_mergeXX(UGeckoInstruction inst);
@@ -229,6 +233,8 @@ private:
   void GenerateExceptionExitRoutine();
   void GenerateQuantizedRoutines();
   void GenerateFPRFRoutine(bool single);
+  void GenerateReciprocalEstimateRoutine();
+  void GenerateReciprocalSquareRootEstimateRoutine();
   void QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store, bool indexed, bool update,
                                      u32 gqr_index, bool single);
   void GenerateQuantizedLoadRoutine(u32 type, bool single);
@@ -261,6 +267,7 @@ private:
   void Force25Bit(PPC64Gen::VSR out, PPC64Gen::VSR in);
   // Sets a CR field from the host CR field that a floating-point comparison set.
   void SetFPRF(PPC64Gen::VSR value, bool single);
+  void EmitEstimate(UGeckoInstruction inst, bool rsqrte, bool paired);
   void SetFPCCFromHostFloatCompare(PPC64Gen::CRF host_field);
   void SetCRFieldFromHostFloatCompare(u32 field, PPC64Gen::CRF host_field);
   // Converts the double in the low 64 bits of value to single precision, as ConvertToSingle.
@@ -360,6 +367,10 @@ private:
   // Set FPSCR[FPRF] for the value in R3, double or rounded to single precision.
   const u8* m_fprf_double_routine = nullptr;
   const u8* m_fprf_single_routine = nullptr;
+  // Common::ApproximateReciprocal and ApproximateReciprocalSquareRoot of the double in R3, into
+  // R3, with R4 zero; or R4 nonzero for inputs whose instructions the interpreter has to run.
+  const u8* m_fres_routine = nullptr;
+  const u8* m_frsqrte_routine = nullptr;
 
   std::unique_ptr<HostDisassembler> m_disassembler;
 };

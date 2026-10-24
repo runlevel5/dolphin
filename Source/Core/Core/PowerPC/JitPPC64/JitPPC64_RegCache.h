@@ -159,6 +159,10 @@ public:
   // Forgets guest register preg without writing it back, after C++ code wrote it in
   // PowerPCState.
   void Discard(u32 preg);
+  // For far code, which mustn't change the cache's state: write guest register preg to
+  // PowerPCState, or load it again from there, if it's in a host register.
+  void EmitStoreValue(u32 preg);
+  void EmitLoadValue(u32 preg);
 
   // Scratch registers, from the volatile registers V0-V15 (VS32-VS47).
   ScopedReg GetScopedReg();

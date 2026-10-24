@@ -20,6 +20,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/PPC64Emitter.h"
 #include "Core/PowerPC/Gekko.h"
+#include "Core/PowerPC/Interpreter/Interpreter.h"
 #include "Core/PowerPC/PowerPC.h"
 
 using namespace PPC64Gen;
@@ -503,4 +504,104 @@ void JitPPC64::ps_mergeXX(UGeckoInstruction inst)
     ASSERT_MSG(DYNA_REC, false, "Unexpected instruction {:#010x}", inst.hex);
     break;
   }
+}
+
+void JitPPC64::EmitEstimate(UGeckoInstruction inst, bool rsqrte, bool paired)
+{
+  // The routines estimate each half. For inputs they leave to the interpreter, call the instruction
+  // in the interpreter from far code, with FB and FD in PowerPCState: it sets FPSCR's flags, and
+  // may leave FD as it was.
+  const VSR b = fpr.R(inst.FB);
+  const VSR d = fpr.RW(inst.FD, true);
+  // ps_rsqrte rounds to single precision, depending on FPSCR[NI], on one path only.
+  if (paired && rsqrte)
+    EnsureNILoaded();
+
+  const u8* routine = rsqrte ? m_frsqrte_routine : m_fres_routine;
+  const auto half0 = gpr.GetScopedReg();
+  const auto half1 = gpr.GetScopedReg();
+  MFVSRD(GPR::R3, b);
+  BL(routine);
+  MR(half0, GPR::R3);
+  MR(half1, GPR::R4);
+  if (paired)
+  {
+    {
+      const auto b1 = fpr.GetScopedReg();
+      XXSWAPD(b1, b);
+      MFVSRD(GPR::R3, b1);
+    }
+    BL(routine);
+    OR(GPR::R4, GPR::R4, half1);
+    MR(half1, GPR::R3);
+  }
+  else
+  {
+    MR(GPR::R4, half1);
+  }
+  CMPDI(CRF::CR1, GPR::R4, 0);
+  const FixupBranch interpret = BCFar(CCFlags::NE, CRF::CR1);
+
+  {
+    const auto result0 = fpr.GetScopedReg();
+    const auto result1 = fpr.GetScopedReg();
+    MTVSRD(result0, half0);
+    if (paired)
+    {
+      MTVSRD(result1, half1);
+      if (rsqrte)
+      {
+        // ps_rsqrte rounds its estimates to single precision; ps_res's are single already.
+        ForceSingle(result0);
+        ForceSingle(result1);
+      }
+      XXPERMDI(d, result0, result1, 0);
+    }
+    else if (rsqrte)
+    {
+      // frsqrte writes ps0.
+      XXPERMDI(d, result0, d, 1);
+    }
+    else
+    {
+      // fres writes both halves.
+      XXPERMDI(d, result0, result0, 0);
+    }
+    if (m_fprf && js.op->wantsFPRF)
+      SetFPRF(result0, !(rsqrte && !paired));
+  }
+  const u8* done = GetCodePtr();
+
+  SwitchToFarCode();
+  SetJumpTarget(interpret);
+  fpr.EmitStoreValue(inst.FB);
+  fpr.EmitStoreValue(inst.FD);
+  {
+    const BitSet32 saved = SaveScratchRegs();
+    ABI_CallFunction(Interpreter::GetInterpreterOp(inst), &m_system.GetInterpreter(), inst.hex);
+    RestoreScratchRegs(saved);
+  }
+  fpr.EmitLoadValue(inst.FD);
+  if (ShouldHandleFPExceptionForInstruction(js.op))
+    WriteConditionalExceptionExit(EXCEPTION_PROGRAM);
+  B(done);
+  SwitchToNearCode();
+}
+
+void JitPPC64::fresx(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITFloatingPointOff);
+  INTERPRET_IF(inst.Rc);
+  FALLBACK_IF(jo.fp_exceptions);
+  EmitEstimate(inst, false, false);
+}
+
+void JitPPC64::frsqrtex(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITFloatingPointOff);
+  INTERPRET_IF(inst.Rc);
+  FALLBACK_IF(jo.fp_exceptions);
+  EmitEstimate(inst, true, false);
 }

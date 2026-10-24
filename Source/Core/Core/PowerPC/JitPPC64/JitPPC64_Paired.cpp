@@ -152,3 +152,21 @@ void JitPPC64::ps_cmpXX(UGeckoInstruction inst)
     SetFPCCFromHostFloatCompare(CRF::CR1);
   SetCRFieldFromHostFloatCompare(inst.CRFD, CRF::CR1);
 }
+
+void JitPPC64::ps_res(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITPairedOff);
+  INTERPRET_IF(inst.Rc);
+  FALLBACK_IF(jo.fp_exceptions);
+  EmitEstimate(inst, false, true);
+}
+
+void JitPPC64::ps_rsqrte(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITPairedOff);
+  INTERPRET_IF(inst.Rc);
+  FALLBACK_IF(jo.fp_exceptions);
+  EmitEstimate(inst, true, true);
+}

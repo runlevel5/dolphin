@@ -3,7 +3,9 @@
 
 #include "Core/PowerPC/JitPPC64/Jit.h"
 
+#include <bit>
 #include <cstddef>
+#include <limits>
 #include <utility>
 
 #include "Common/CommonTypes.h"
@@ -237,6 +239,10 @@ void JitPPC64::GenerateAsm()
   GenerateFPRFRoutine(false);
   m_fprf_single_routine = GetCodePtr();
   GenerateFPRFRoutine(true);
+  m_fres_routine = GetCodePtr();
+  GenerateReciprocalEstimateRoutine();
+  m_frsqrte_routine = GetCodePtr();
+  GenerateReciprocalSquareRootEstimateRoutine();
   Common::JitRegister::Register(routines_start, GetCodePtr(), "JIT_SlowAccess");
 
   FlushIcache();
@@ -317,5 +323,106 @@ void JitPPC64::GenerateFPRFRoutine(bool single)
   LWZ(GPR::R0, PPC_REG, PPCSTATE_OFF(fpscr));
   RLWIMI(GPR::R0, GPR::R4, 12, 15, 19);
   STW(GPR::R0, PPC_REG, PPCSTATE_OFF(fpscr));
+  BLR();
+}
+
+void JitPPC64::GenerateReciprocalEstimateRoutine()
+{
+  // As Common::ApproximateReciprocal, for nonzero finite inputs; zeroes, infinities and NaNs raise
+  // exceptions or set FPSCR flags, which the interpreter does. Uses R0, R3, R4, R12, CR0 and CR1.
+  RLDICL(GPR::R4, GPR::R3, 12, 53);  // Exponent
+  CMPLWI(CRF::CR1, GPR::R4, 0x7FF);
+  const FixupBranch special = BC(CCFlags::EQ, CRF::CR1);
+  SLDI(GPR::R0, GPR::R3, 1);
+  CMPDI(CRF::CR0, GPR::R0, 0);
+  const FixupBranch zero = BC(CCFlags::EQ, CRF::CR0);
+  RLDICR(GPR::R12, GPR::R3, 0, 0);  // Sign
+  CMPLWI(CRF::CR1, GPR::R4, 895);
+  const FixupBranch small = BC(CCFlags::LT, CRF::CR1);
+  CMPLWI(CRF::CR1, GPR::R4, 1149);
+  const FixupBranch large = BC(CCFlags::GE, CRF::CR1);
+
+  // (0x7FD << 52) - exponent, and base - (dec * (i % 1024) + 1) / 2 from fres_expected[i / 1024],
+  // i being the top 15 bits of the mantissa.
+  SUBFIC(GPR::R0, GPR::R4, 0x7FD);
+  SLDI(GPR::R0, GPR::R0, 52);
+  OR(GPR::R12, GPR::R12, GPR::R0);
+  RLDICL(GPR::R4, GPR::R3, 64 - 37, 49);
+  MOVP2R(GPR::R3, Common::fres_expected.data());
+  static_assert(sizeof(Common::BaseAndDec) == 8);
+  RLWINM(GPR::R0, GPR::R4, 32 - 10 + 3, 24, 28);
+  ADD(GPR::R3, GPR::R3, GPR::R0);
+  LWZ(GPR::R0, GPR::R3, offsetof(Common::BaseAndDec, m_dec));
+  LWZ(GPR::R3, GPR::R3, offsetof(Common::BaseAndDec, m_base));
+  CLRLDI(GPR::R4, GPR::R4, 64 - 10);
+  MULLW(GPR::R4, GPR::R4, GPR::R0);
+  ADDI(GPR::R4, GPR::R4, 1);
+  SRWI(GPR::R4, GPR::R4, 1);
+  SUBF(GPR::R3, GPR::R4, GPR::R3);
+  SLDI(GPR::R3, GPR::R3, 29);
+  OR(GPR::R3, GPR::R3, GPR::R12);
+  LI(GPR::R4, 0);
+  BLR();
+
+  // Small inputs give the largest single, and large ones zero, of the input's sign.
+  SetJumpTarget(small);
+  MOVI2R(GPR::R3, std::bit_cast<u64>(static_cast<double>(std::numeric_limits<float>::max())));
+  OR(GPR::R3, GPR::R3, GPR::R12);
+  LI(GPR::R4, 0);
+  BLR();
+  SetJumpTarget(large);
+  MR(GPR::R3, GPR::R12);
+  LI(GPR::R4, 0);
+  BLR();
+
+  SetJumpTarget(special);
+  SetJumpTarget(zero);
+  LI(GPR::R4, 1);
+  BLR();
+}
+
+void JitPPC64::GenerateReciprocalSquareRootEstimateRoutine()
+{
+  // As Common::ApproximateReciprocalSquareRoot, for positive normal inputs; the others raise
+  // exceptions, set FPSCR flags or are rare, and the interpreter runs them. Uses R0, R3, R4, R12,
+  // CR0 and CR1.
+  CMPDI(CRF::CR0, GPR::R3, 0);
+  const FixupBranch negative = BC(CCFlags::LT, CRF::CR0);
+  RLDICL(GPR::R4, GPR::R3, 12, 53);  // Exponent
+  CMPLWI(CRF::CR1, GPR::R4, 0);
+  const FixupBranch zero_or_denormal = BC(CCFlags::EQ, CRF::CR1);
+  CMPLWI(CRF::CR1, GPR::R4, 0x7FF);
+  const FixupBranch special = BC(CCFlags::EQ, CRF::CR1);
+
+  // ((0x3FF << 52) - ((exponent - (0x3FE << 52)) / 2)) & (0x7FF << 52), the division being exact.
+  ADDI(GPR::R12, GPR::R4, -0x3FE);
+  SLDI(GPR::R12, GPR::R12, 52);
+  SRADI(GPR::R12, GPR::R12, 1);
+  LIS(GPR::R0, 0x3FF0);
+  SLDI(GPR::R0, GPR::R0, 32);
+  SUBF(GPR::R12, GPR::R12, GPR::R0);
+  RLDICL(GPR::R12, GPR::R12, 0, 1);
+  RLDICR(GPR::R12, GPR::R12, 0, 11);
+
+  // base + dec * (i % 2048) from frsqrte_expected[i / 2048], i being the exponent's lowest bit and
+  // the top 15 bits of the mantissa.
+  RLDICL(GPR::R4, GPR::R3, 64 - 37, 48);
+  MOVP2R(GPR::R0, Common::frsqrte_expected.data());
+  RLWINM(GPR::R3, GPR::R4, 32 - 11 + 3, 24, 28);
+  ADD(GPR::R3, GPR::R3, GPR::R0);
+  LWZ(GPR::R0, GPR::R3, offsetof(Common::BaseAndDec, m_dec));
+  LWZ(GPR::R3, GPR::R3, offsetof(Common::BaseAndDec, m_base));
+  CLRLDI(GPR::R4, GPR::R4, 64 - 11);
+  MULLW(GPR::R4, GPR::R4, GPR::R0);
+  ADD(GPR::R3, GPR::R3, GPR::R4);
+  SLDI(GPR::R3, GPR::R3, 26);
+  OR(GPR::R3, GPR::R3, GPR::R12);
+  LI(GPR::R4, 0);
+  BLR();
+
+  SetJumpTarget(negative);
+  SetJumpTarget(zero_or_denormal);
+  SetJumpTarget(special);
+  LI(GPR::R4, 1);
   BLR();
 }
