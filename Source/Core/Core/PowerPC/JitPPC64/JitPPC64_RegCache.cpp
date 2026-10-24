@@ -101,6 +101,24 @@ void PPC64GPRCache::Release(u32 preg)
   guest = {};
 }
 
+void PPC64GPRCache::StoreIfDirty(u32 preg)
+{
+  GuestReg& guest = m_guest[preg];
+  if (!guest.bound || !guest.dirty)
+    return;
+  m_jit->STW(guest.host, PPC_REG, PPCSTATE_OFF_GPR(preg));
+  guest.dirty = false;
+}
+
+void PPC64GPRCache::Discard(u32 preg)
+{
+  GuestReg& guest = m_guest[preg];
+  if (!guest.bound)
+    return;
+  m_host_in_use[DecodeReg(guest.host)] = false;
+  guest = {};
+}
+
 void PPC64GPRCache::Flush(FlushMode mode)
 {
   for (u32 preg = 0; preg < m_guest.size(); preg++)
@@ -235,6 +253,24 @@ void PPC64FPRCache::Release(u32 preg)
   GuestReg& guest = m_guest[preg];
   if (guest.dirty)
     Store(guest.host, preg);
+  m_host_in_use &= ~(u64{1} << DecodeReg(guest.host));
+  guest = {};
+}
+
+void PPC64FPRCache::StoreIfDirty(u32 preg)
+{
+  GuestReg& guest = m_guest[preg];
+  if (!guest.bound || !guest.dirty)
+    return;
+  Store(guest.host, preg);
+  guest.dirty = false;
+}
+
+void PPC64FPRCache::Discard(u32 preg)
+{
+  GuestReg& guest = m_guest[preg];
+  if (!guest.bound)
+    return;
   m_host_in_use &= ~(u64{1} << DecodeReg(guest.host));
   guest = {};
 }

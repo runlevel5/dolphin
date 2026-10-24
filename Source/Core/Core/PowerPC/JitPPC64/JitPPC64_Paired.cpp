@@ -18,9 +18,9 @@ void JitPPC64::ps_arith(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITPairedOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions || (jo.div_by_zero_exceptions && inst.SUBOP5 == 18));
-  FALLBACK_IF(m_fprf && js.op->wantsFPRF);
+  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   // ps_muls0, ps_muls1, ps_madds0 and ps_madds1 are ps_mul and ps_madd, with one half of C for
   // both halves.
@@ -74,9 +74,9 @@ void JitPPC64::ps_sumX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITPairedOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions);
-  FALLBACK_IF(m_fprf && js.op->wantsFPRF);
+  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   // ps_sum0: a.ps0 + b.ps1, c.ps1; ps_sum1: c.ps0, a.ps0 + b.ps1. Both halves are rounded to single
   // precision.
@@ -107,7 +107,7 @@ void JitPPC64::ps_sel(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITPairedOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
 
   const VSR a = fpr.R(inst.FA);
   const VSR b = fpr.R(inst.FB);
@@ -127,7 +127,7 @@ void JitPPC64::ps_cmpXX(UGeckoInstruction inst)
   JITDISABLE(bJITPairedOff);
   FALLBACK_IF(jo.fp_exceptions);
   // These set FPSCR[FPCC].
-  FALLBACK_IF(m_fprf);
+  INTERPRET_IF(m_fprf);
 
   // ps_cmpu0 and ps_cmpo0 compare ps0, ps_cmpu1 and ps_cmpo1 ps1.
   const bool half1 = inst.SUBOP10 == 64 || inst.SUBOP10 == 96;

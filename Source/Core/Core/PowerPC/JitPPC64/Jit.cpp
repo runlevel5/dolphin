@@ -256,6 +256,36 @@ void JitPPC64::SingleStep()
   Run();
 }
 
+void JitPPC64::InterpretInstruction(UGeckoInstruction inst)
+{
+  // For instructions that only use the registers the analyzer lists, with CR, XER, FPSCR and SPRs,
+  // and don't access memory, change MSR or end the block: the interpreter works on PowerPCState,
+  // but only these registers have to be written back first, and the ones it writes dropped after,
+  // which spares flushing the others.
+  ASSERT(!js.op->canEndBlock);
+  BitSet32 fprs = js.op->fregsIn;
+  if (js.op->fregOut >= 0)
+    fprs[js.op->fregOut] = true;
+  for (const int preg : js.op->regsIn | js.op->regsOut)
+    gpr.StoreIfDirty(preg);
+  for (const int preg : fprs)
+    fpr.StoreIfDirty(preg);
+
+  const BitSet32 saved = SaveScratchRegs();
+  ABI_CallFunction(Interpreter::GetInterpreterOp(inst), &m_system.GetInterpreter(), inst.hex);
+  RestoreScratchRegs(saved);
+
+  for (const int preg : js.op->regsOut)
+    gpr.Discard(preg);
+  if (js.op->fregOut >= 0)
+    fpr.Discard(js.op->fregOut);
+  // FPSCR[NI] may have changed.
+  m_ni_loaded = false;
+
+  if (ShouldHandleFPExceptionForInstruction(js.op))
+    WriteConditionalExceptionExit(EXCEPTION_PROGRAM);
+}
+
 void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
 {
   // The interpreter works on PowerPCState.

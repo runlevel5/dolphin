@@ -47,6 +47,18 @@ constexpr PPC64Gen::GPR MEM_REG = PPC64Gen::GPR::R29;
 #define PPCSTATE_OFF_SPR(i) PPCSTATE_OFF_ARRAY(spr, i)
 #define PPCSTATE_OFF_PS(i) PPCSTATE_OFF_ARRAY(ps, i)
 
+// Calls the interpreter for this instruction, with only the registers it uses written back: see
+// JitPPC64::InterpretInstruction.
+#define INTERPRET_IF(cond)                                                                         \
+  do                                                                                               \
+  {                                                                                                \
+    if (cond)                                                                                      \
+    {                                                                                              \
+      InterpretInstruction(inst);                                                                  \
+      return;                                                                                      \
+    }                                                                                              \
+  } while (0)
+
 class JitPPC64 : public JitBase, public PPC64Gen::PPC64CodeBlock, public CommonAsmRoutinesBase
 {
 public:
@@ -85,6 +97,7 @@ public:
   // OPCODES
   using Instruction = void (JitPPC64::*)(UGeckoInstruction);
   void FallBackToInterpreter(UGeckoInstruction inst);
+  void InterpretInstruction(UGeckoInstruction inst);
   void DoNothing(UGeckoInstruction inst);
 
   void DynaRunTable4(UGeckoInstruction inst);

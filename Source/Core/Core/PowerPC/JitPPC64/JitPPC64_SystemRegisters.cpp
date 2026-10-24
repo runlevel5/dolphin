@@ -14,7 +14,8 @@
 using namespace PPC64Gen;
 
 // SPRs other than XER, LR and CTR have side effects or are privileged, so only these three are
-// accessed directly; the interpreter handles the others.
+// accessed directly; the interpreter handles the others. It reads them without flushing the
+// registers; mtspr ends the block, which flushes them anyway.
 
 void JitPPC64::mfspr(UGeckoInstruction inst)
 {
@@ -43,7 +44,7 @@ void JitPPC64::mfspr(UGeckoInstruction inst)
   }
 
   default:
-    FallBackToInterpreter(inst);
+    InterpretInstruction(inst);
     break;
   }
 }

@@ -105,23 +105,23 @@ constexpr std::array<JitPPC64OpTemplate, 13> s_table4{{
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 17> s_table4_2{{
-    {10, &JitPPC64::ps_sumX},                // ps_sum0
-    {11, &JitPPC64::ps_sumX},                // ps_sum1
-    {12, &JitPPC64::ps_arith},               // ps_muls0
-    {13, &JitPPC64::ps_arith},               // ps_muls1
-    {14, &JitPPC64::ps_arith},               // ps_madds0
-    {15, &JitPPC64::ps_arith},               // ps_madds1
-    {18, &JitPPC64::ps_arith},               // ps_div
-    {20, &JitPPC64::ps_arith},               // ps_sub
-    {21, &JitPPC64::ps_arith},               // ps_add
-    {23, &JitPPC64::ps_sel},                 // ps_sel
-    {24, &JitPPC64::FallBackToInterpreter},  // ps_res
-    {25, &JitPPC64::ps_arith},               // ps_mul
-    {26, &JitPPC64::FallBackToInterpreter},  // ps_rsqrte
-    {28, &JitPPC64::ps_arith},               // ps_msub
-    {29, &JitPPC64::ps_arith},               // ps_madd
-    {30, &JitPPC64::ps_arith},               // ps_nmsub
-    {31, &JitPPC64::ps_arith},               // ps_nmadd
+    {10, &JitPPC64::ps_sumX},               // ps_sum0
+    {11, &JitPPC64::ps_sumX},               // ps_sum1
+    {12, &JitPPC64::ps_arith},              // ps_muls0
+    {13, &JitPPC64::ps_arith},              // ps_muls1
+    {14, &JitPPC64::ps_arith},              // ps_madds0
+    {15, &JitPPC64::ps_arith},              // ps_madds1
+    {18, &JitPPC64::ps_arith},              // ps_div
+    {20, &JitPPC64::ps_arith},              // ps_sub
+    {21, &JitPPC64::ps_arith},              // ps_add
+    {23, &JitPPC64::ps_sel},                // ps_sel
+    {24, &JitPPC64::InterpretInstruction},  // ps_res
+    {25, &JitPPC64::ps_arith},              // ps_mul
+    {26, &JitPPC64::InterpretInstruction},  // ps_rsqrte
+    {28, &JitPPC64::ps_arith},              // ps_msub
+    {29, &JitPPC64::ps_arith},              // ps_madd
+    {30, &JitPPC64::ps_arith},              // ps_nmsub
+    {31, &JitPPC64::ps_arith},              // ps_nmadd
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 4> s_table4_3{{
@@ -274,8 +274,8 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {242, &JitPPC64::FallBackToInterpreter},  // mtsrin
     {339, &JitPPC64::mfspr},                  // mfspr
     {467, &JitPPC64::mtspr},                  // mtspr
-    {371, &JitPPC64::FallBackToInterpreter},  // mftb
-    {512, &JitPPC64::FallBackToInterpreter},  // mcrxr
+    {371, &JitPPC64::InterpretInstruction},   // mftb
+    {512, &JitPPC64::InterpretInstruction},   // mcrxr
     {595, &JitPPC64::FallBackToInterpreter},  // mfsr
     {659, &JitPPC64::FallBackToInterpreter},  // mfsrin
 
@@ -292,15 +292,15 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 9> s_table59{{
-    {18, &JitPPC64::fp_arith},               // fdivsx
-    {20, &JitPPC64::fp_arith},               // fsubsx
-    {21, &JitPPC64::fp_arith},               // faddsx
-    {24, &JitPPC64::FallBackToInterpreter},  // fresx
-    {25, &JitPPC64::fp_arith},               // fmulsx
-    {28, &JitPPC64::fp_arith},               // fmsubsx
-    {29, &JitPPC64::fp_arith},               // fmaddsx
-    {30, &JitPPC64::fp_arith},               // fnmsubsx
-    {31, &JitPPC64::fp_arith},               // fnmaddsx
+    {18, &JitPPC64::fp_arith},              // fdivsx
+    {20, &JitPPC64::fp_arith},              // fsubsx
+    {21, &JitPPC64::fp_arith},              // faddsx
+    {24, &JitPPC64::InterpretInstruction},  // fresx
+    {25, &JitPPC64::fp_arith},              // fmulsx
+    {28, &JitPPC64::fp_arith},              // fmsubsx
+    {29, &JitPPC64::fp_arith},              // fmaddsx
+    {30, &JitPPC64::fp_arith},              // fnmsubsx
+    {31, &JitPPC64::fp_arith},              // fnmaddsx
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 15> s_table63{{
@@ -314,25 +314,25 @@ constexpr std::array<JitPPC64OpTemplate, 15> s_table63{{
     {40, &JitPPC64::fp_logic},   // fnegx
     {12, &JitPPC64::frspx},      // frspx
 
-    {64, &JitPPC64::FallBackToInterpreter},   // mcrfs
-    {583, &JitPPC64::FallBackToInterpreter},  // mffsx
-    {70, &JitPPC64::FallBackToInterpreter},   // mtfsb0x
-    {38, &JitPPC64::FallBackToInterpreter},   // mtfsb1x
-    {134, &JitPPC64::FallBackToInterpreter},  // mtfsfix
-    {711, &JitPPC64::FallBackToInterpreter},  // mtfsfx
+    {64, &JitPPC64::InterpretInstruction},   // mcrfs
+    {583, &JitPPC64::InterpretInstruction},  // mffsx
+    {70, &JitPPC64::InterpretInstruction},   // mtfsb0x
+    {38, &JitPPC64::InterpretInstruction},   // mtfsb1x
+    {134, &JitPPC64::InterpretInstruction},  // mtfsfix
+    {711, &JitPPC64::InterpretInstruction},  // mtfsfx
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 10> s_table63_2{{
-    {18, &JitPPC64::fp_arith},               // fdivx
-    {20, &JitPPC64::fp_arith},               // fsubx
-    {21, &JitPPC64::fp_arith},               // faddx
-    {23, &JitPPC64::fselx},                  // fselx
-    {25, &JitPPC64::fp_arith},               // fmulx
-    {26, &JitPPC64::FallBackToInterpreter},  // frsqrtex
-    {28, &JitPPC64::fp_arith},               // fmsubx
-    {29, &JitPPC64::fp_arith},               // fmaddx
-    {30, &JitPPC64::fp_arith},               // fnmsubx
-    {31, &JitPPC64::fp_arith},               // fnmaddx
+    {18, &JitPPC64::fp_arith},              // fdivx
+    {20, &JitPPC64::fp_arith},              // fsubx
+    {21, &JitPPC64::fp_arith},              // faddx
+    {23, &JitPPC64::fselx},                 // fselx
+    {25, &JitPPC64::fp_arith},              // fmulx
+    {26, &JitPPC64::InterpretInstruction},  // frsqrtex
+    {28, &JitPPC64::fp_arith},              // fmsubx
+    {29, &JitPPC64::fp_arith},              // fmaddx
+    {30, &JitPPC64::fp_arith},              // fnmsubx
+    {31, &JitPPC64::fp_arith},              // fnmaddx
 }};
 
 constexpr std::array<JitPPC64::Instruction, 64> s_dyna_op_table = []() consteval {

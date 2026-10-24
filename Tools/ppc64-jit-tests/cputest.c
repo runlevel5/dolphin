@@ -971,6 +971,78 @@ static void TestPairedSingles(void)
     Mix64(Bits(s_) & FPSCR_MASK);                                                                  \
   } while (0)
 
+// FPSCR instructions, and the record forms of floating-point and paired-single instructions. The
+// JITs don't update FPSCR's status bits, so FPSCR is cleared before each record form, whose CR1
+// comes from them, and mffs is masked.
+static void TestFPSCRAndRecordForms(void)
+{
+  Begin();
+  for (int i = 0; i < ITERATIONS; i++)
+  {
+    BeginIteration();
+    const double a = FloatValue(), b = FloatValue(), c = FloatValue();
+    double d;
+    u32 cr;
+    double s_;
+
+#define RECORD_FORM(insn, operands, ...)                                                           \
+  do                                                                                               \
+  {                                                                                                \
+    asm volatile("mtfsf 0xff,%3\n\t" insn " %0," operands "\n\tmfcr %1\n\tmffs %2"               \
+                 : "=&f"(d), "=&r"(cr), "=&f"(s_)                                                 \
+                 : "f"(0.0), __VA_ARGS__);                                                         \
+    Record64(insn, Bits(d), Bits(s_) & FPSCR_MASK, cr & 0x0F000000);                               \
+  } while (0)
+    RECORD_FORM("fadd.", "%4,%5", "f"(a), "f"(b));
+    RECORD_FORM("fmul.", "%4,%5", "f"(a), "f"(c));
+    RECORD_FORM("fmadd.", "%4,%5,%6", "f"(a), "f"(c), "f"(b));
+    RECORD_FORM("fnmsubs.", "%4,%5,%6", "f"(a), "f"(c), "f"(b));
+    RECORD_FORM("fres.", "%4", "f"(b));
+    RECORD_FORM("frsqrte.", "%4", "f"(b));
+    RECORD_FORM("ps_add.", "%4,%5", "f"(a), "f"(b));
+    RECORD_FORM("ps_madd.", "%4,%5,%6", "f"(a), "f"(c), "f"(b));
+    RECORD_FORM("ps_res.", "%4", "f"(b));
+    RECORD_FORM("ps_rsqrte.", "%4", "f"(b));
+#undef RECORD_FORM
+
+    // mtfsfi and mtfsb0/mtfsb1 on the rounding mode and NI, read back by mcrfs, and used by a
+    // compiled instruction after them.
+    const u32 field7 = Random() % 8;
+    asm volatile("mtfsf 0xff,%5\n\tmtfsfi 7,%6\n\tfadd %0,%3,%4\n\tmcrfs 2,7\n\tmfcr %1\n\t"
+                 "mtfsb1 29\n\tmtfsb0 30\n\tfmul %2,%3,%4\n\tmtfsf 0xff,%5"
+                 : "=&f"(d), "=&r"(cr), "=&f"(s_)
+                 : "f"(a), "f"(b), "f"(0.0), "i"(0)
+                 : "cr2");
+    Record64("mtfsfi 0", Bits(d), Bits(s_), cr & 0x00F00000);
+    switch (field7)
+    {
+#define MTFSFI(n)                                                                                  \
+  case n:                                                                                          \
+    asm volatile("mtfsfi 7," #n "\n\tfadd %0,%3,%4\n\tmcrfs 2,7\n\tmfcr %1\n\tfmul %2,%3,%4\n\t"     \
+                 "mtfsf 0xff,%5"                                                                   \
+                 : "=&f"(d), "=&r"(cr), "=&f"(s_)                                                 \
+                 : "f"(a), "f"(1e-310), "f"(0.0)                                                   \
+                 : "cr2");                                                                         \
+    break;
+      MTFSFI(0) MTFSFI(1) MTFSFI(2) MTFSFI(3) MTFSFI(4) MTFSFI(5) MTFSFI(6) MTFSFI(7)
+#undef MTFSFI
+    }
+    Record64("mtfsfi", Bits(d), Bits(s_), cr & 0x00F00000);
+
+    // Instructions that the JIT has the interpreter run, writing registers that it holds in host
+    // registers before and uses after.
+    double e = a;
+    asm volatile("fadd %0,%0,%1\n\tfres %0,%2\n\tfadd %0,%0,%1" : "+f"(e) : "f"(c), "f"(b));
+    Record64("fres", Bits(e), 0, 0);
+    const u32 gqr = Random();
+    asm volatile("mtspr %1,%0" : : "r"(gqr), "i"(915));
+    u32 y = Random(), z;
+    asm volatile("addi %0,%0,1\n\tmfspr %0,%2\n\tadd %1,%0,%0" : "+r"(y), "=r"(z) : "i"(915));
+    Record("mfspr", y, z, 0);
+  }
+  End("fpscr-record-forms");
+}
+
 static void TestPairedFusedMultiplyAddCases(void)
 {
   static const u32 ties[][3] = {
@@ -1535,6 +1607,7 @@ int main(void)
   TestFloatLoadsAndStores();
   TestPairedSingles();
   TestPairedFusedMultiplyAddCases();
+  TestFPSCRAndRecordForms();
   TestQuantizedLoadsAndStores();
   TestQuantizedCompiled();
   TestSelfModifyingCode();

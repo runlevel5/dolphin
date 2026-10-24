@@ -75,6 +75,11 @@ public:
   PPC64Gen::GPR RW(u32 preg, bool load = false);
 
   void Flush(FlushMode mode);
+  // Writes guest register preg back if it was written, keeping it in its host register.
+  void StoreIfDirty(u32 preg);
+  // Forgets guest register preg without writing it back, after C++ code wrote it in
+  // PowerPCState.
+  void Discard(u32 preg);
 
   // Scratch registers, from the volatile registers R5-R11.
   ScopedReg GetScopedReg();
@@ -149,6 +154,11 @@ public:
   PPC64Gen::VSR RW(u32 preg, bool load = false);
 
   void Flush(FlushMode mode);
+  // Writes guest register preg back if it was written, keeping it in its host register.
+  void StoreIfDirty(u32 preg);
+  // Forgets guest register preg without writing it back, after C++ code wrote it in
+  // PowerPCState.
+  void Discard(u32 preg);
 
   // Scratch registers, from the volatile registers V0-V15 (VS32-VS47).
   ScopedReg GetScopedReg();

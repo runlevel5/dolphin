@@ -274,9 +274,9 @@ void JitPPC64::fp_arith(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITFloatingPointOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions || (jo.div_by_zero_exceptions && inst.SUBOP5 == 18));
-  FALLBACK_IF(m_fprf && js.op->wantsFPRF);
+  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   const u32 op5 = inst.SUBOP5;
   const bool single = inst.OPCD == 59;
@@ -302,7 +302,7 @@ void JitPPC64::fp_logic(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITFloatingPointOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
 
   // These only change the sign bit, of ps0, or of both halves for the paired single forms.
   const bool paired = inst.OPCD == 4;
@@ -359,7 +359,7 @@ void JitPPC64::fselx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITFloatingPointOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
 
   const VSR a = fpr.R(inst.FA);
   const VSR b = fpr.R(inst.FB);
@@ -379,9 +379,9 @@ void JitPPC64::frspx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITFloatingPointOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions);
-  FALLBACK_IF(m_fprf && js.op->wantsFPRF);
+  INTERPRET_IF(m_fprf && js.op->wantsFPRF);
 
   const VSR b = fpr.R(inst.FB);
   const VSR d = fpr.RW(inst.FD);
@@ -396,7 +396,7 @@ void JitPPC64::fctiwx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITFloatingPointOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions);
 
   const bool round_toward_zero = inst.SUBOP10 == 15;
@@ -441,7 +441,7 @@ void JitPPC64::fcmpX(UGeckoInstruction inst)
   JITDISABLE(bJITFloatingPointOff);
   FALLBACK_IF(jo.fp_exceptions);
   // fcmpu and fcmpo set FPSCR[FPCC].
-  FALLBACK_IF(m_fprf);
+  INTERPRET_IF(m_fprf);
 
   const VSR a = fpr.R(inst.FA);
   const VSR b = fpr.R(inst.FB);
@@ -454,7 +454,7 @@ void JitPPC64::ps_mergeXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITPairedOff);
-  FALLBACK_IF(inst.Rc);
+  INTERPRET_IF(inst.Rc);
 
   const VSR a = fpr.R(inst.FA);
   const VSR b = fpr.R(inst.FB);
