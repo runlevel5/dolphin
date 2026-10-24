@@ -1,3 +1,4 @@
 cputest.elf
 cputest-jit.elf
 cputest-jit-fprf.elf
+cputest-mmu.elf

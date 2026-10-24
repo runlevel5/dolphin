@@ -60,7 +60,6 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStorePairedOff);
-  FALLBACK_IF(jo.memcheck);
 
   const bool indexed = inst.OPCD == 4;
   const bool update = inst.OPCD == 57 || (indexed && (inst.SUBOP6 & 32));
@@ -93,7 +92,6 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
   }
   CLRLDI(addr, addr, 32);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
-  const VSR d = fpr.RW(inst.FD);
 
   EmitMemoryAccess({.size = single ? type.size : 2 * type.size}, value, addr);
 
@@ -153,7 +151,7 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
     SLDI(tmp, tmp, 32);
     MTVSRD(half1, tmp);
   }
-  XXPERMDI(d, half0, half1, 0);
+  XXPERMDI(fpr.RW(inst.FD, false), half0, half1, 0);
 
   if (update)
     MR(a, addr);
@@ -212,7 +210,6 @@ void JitPPC64::psq_stXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStorePairedOff);
-  FALLBACK_IF(jo.memcheck);
 
   const bool indexed = inst.OPCD == 4;
   const bool update = inst.OPCD == 61 || (indexed && (inst.SUBOP6 & 32));

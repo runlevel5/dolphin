@@ -444,15 +444,41 @@ void JitPPC64::WriteExceptionExit(GPR dest, bool only_external, bool always_exce
   B(dispatcher);
 }
 
-void JitPPC64::WriteConditionalExceptionExit(u32 exception)
+void JitPPC64::WriteConditionalExceptionExit(u32 exception, GPR tmp)
 {
+  // The exit is in far code, unless this is far code already.
   ASSERT(exception <= 0xFFFF);
-  LWZ(GPR::R3, PPC_REG, PPCSTATE_OFF(Exceptions));
-  ANDI_(GPR::R3, GPR::R3, static_cast<u16>(exception));
-  const FixupBranch no_exception = BC(CCFlags::EQ, CRF::CR0);
+  LWZ(tmp, PPC_REG, PPCSTATE_OFF(Exceptions));
+  ANDI_(tmp, tmp, static_cast<u16>(exception));
+  if (m_in_far_code)
+  {
+    const FixupBranch no_exception = BC(CCFlags::EQ, CRF::CR0);
+    FlushRegisters(FlushMode::MaintainState);
+    WriteTakeExceptionExit();
+    SetJumpTarget(no_exception);
+    return;
+  }
+
+  const FixupBranch raised = BCFar(CCFlags::NE, CRF::CR0);
+  SwitchToFarCode();
+  SetJumpTarget(raised);
   FlushRegisters(FlushMode::MaintainState);
-  WriteExceptionExit(js.compilerPC, false, true);
-  SetJumpTarget(no_exception);
+  WriteTakeExceptionExit();
+  SwitchToNearCode();
+}
+
+void JitPPC64::WriteTakeExceptionExit()
+{
+  // Profiling and the performance monitor need this block's data at the exit.
+  if (IsProfilingEnabled() || (m_ppc_state.feature_flags & FEATURE_FLAG_PERFMON))
+  {
+    WriteExceptionExit(js.compilerPC, false, true);
+    return;
+  }
+
+  MOVI2R(GPR::R3, js.compilerPC);
+  MOVI2R(GPR::R4, js.downcountAmount);
+  B(m_exception_exit_routine);
 }
 
 void JitPPC64::Jit(u32 em_address)

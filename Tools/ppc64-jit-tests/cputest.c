@@ -1258,6 +1258,186 @@ static void InstallHandler(u32 vector, const u32* start, const u32* end)
   FlushCode(destination, 0x100);
 }
 
+#ifdef TEST_DSI
+// Data storage exceptions, which only MMU mode raises: an empty page table makes every address
+// that the BATs don't map fault. The handler records DAR, DSISR and a count in SPRG1-SPRG3, and
+// skips the faulting instruction, which must not have written any register.
+extern const u32 dsi_handler[], dsi_handler_end[];
+asm(".section .text\n"
+    "dsi_handler:\n"
+    "  mtsprg0 3\n  mfsprg1 3\n  addi 3,3,1\n  mtsprg1 3\n"
+    "  mfdar 3\n  mtsprg2 3\n  mfdsisr 3\n  mtsprg3 3\n"
+    "  mfsrr0 3\n  addi 3,3,4\n  mtsrr0 3\n  mfsprg0 3\n  rfi\n"
+    "dsi_handler_end:\n");
+
+// The page table: 64 KiB of invalid entries, at physical 16 MiB.
+#define PAGE_TABLE ((u32*)0x81000000)
+
+static void RecordDSI(const char* name, u32 a, u32 b)
+{
+  u32 count, dar, dsisr, srr0;
+  asm volatile("mfsprg1 %0\n\tmfsprg2 %1\n\tmfsprg3 %2\n\tmfsrr0 %3"
+               : "=r"(count), "=r"(dar), "=r"(dsisr), "=r"(srr0));
+  Record(name, a, b, dar);
+  Mix(count);
+  Mix(dsisr);
+  Mix(srr0);
+}
+
+#define DSI_LOAD(insn, offset)                                                                     \
+  do                                                                                               \
+  {                                                                                                \
+    u32 r_ = value;                                                                                \
+    asm volatile(insn " %0," #offset "(%1)" : "+r"(r_) : "b"(bad) : "memory");                     \
+    RecordDSI(insn, r_, 0);                                                                        \
+  } while (0)
+#define DSI_LOADX(insn)                                                                            \
+  do                                                                                               \
+  {                                                                                                \
+    u32 r_ = value;                                                                                \
+    asm volatile(insn " %0,%1,%2" : "+r"(r_) : "b"(bad), "r"(index) : "memory");                   \
+    RecordDSI(insn, r_, 0);                                                                        \
+  } while (0)
+#define DSI_LOADU(insn, offset)                                                                    \
+  do                                                                                               \
+  {                                                                                                \
+    u32 r_ = value;                                                                                \
+    u8* p_ = bad;                                                                                  \
+    asm volatile(insn " %0," #offset "(%1)" : "+r"(r_), "+b"(p_) : : "memory");                    \
+    RecordDSI(insn, r_, (u32)(p_ - bad));                                                          \
+  } while (0)
+#define DSI_LOADUX(insn)                                                                           \
+  do                                                                                               \
+  {                                                                                                \
+    u32 r_ = value;                                                                                \
+    u8* p_ = bad;                                                                                  \
+    asm volatile(insn " %0,%1,%2" : "+r"(r_), "+b"(p_) : "r"(index) : "memory");                   \
+    RecordDSI(insn, r_, (u32)(p_ - bad));                                                          \
+  } while (0)
+#define DSI_STORE(insn, offset)                                                                    \
+  do                                                                                               \
+  {                                                                                                \
+    asm volatile(insn " %0," #offset "(%1)" : : "r"(value), "b"(bad) : "memory");                  \
+    RecordDSI(insn, 0, 0);                                                                         \
+  } while (0)
+#define DSI_STOREX(insn)                                                                           \
+  do                                                                                               \
+  {                                                                                                \
+    asm volatile(insn " %0,%1,%2" : : "r"(value), "b"(bad), "r"(index) : "memory");                \
+    RecordDSI(insn, 0, 0);                                                                         \
+  } while (0)
+#define DSI_STOREU(insn, offset)                                                                   \
+  do                                                                                               \
+  {                                                                                                \
+    u8* p_ = bad;                                                                                  \
+    asm volatile(insn " %1," #offset "(%0)" : "+b"(p_) : "r"(value) : "memory");                   \
+    RecordDSI(insn, (u32)(p_ - bad), 0);                                                           \
+  } while (0)
+#define DSI_FLOAD(insn, offset)                                                                    \
+  do                                                                                               \
+  {                                                                                                \
+    double d_ = fvalue;                                                                            \
+    u8* p_ = bad;                                                                                  \
+    asm volatile(insn " %0," #offset "(%1)" : "+f"(d_), "+b"(p_) : : "memory");                    \
+    const u64 bits_ = Bits(d_);                                                                    \
+    RecordDSI(insn, (u32)(bits_ >> 32) ^ (u32)bits_, (u32)(p_ - bad));                             \
+  } while (0)
+#define DSI_FSTORE(insn, offset)                                                                   \
+  do                                                                                               \
+  {                                                                                                \
+    u8* p_ = bad;                                                                                  \
+    asm volatile(insn " %1," #offset "(%0)" : "+b"(p_) : "f"(fvalue) : "memory");                  \
+    RecordDSI(insn, (u32)(p_ - bad), 0);                                                           \
+  } while (0)
+
+static void TestDSI(void)
+{
+  Begin();
+  InstallHandler(0x300, dsi_handler, dsi_handler_end);
+  asm volatile("li 3,0\n\tmtsprg1 3\n\tmtsprg2 3\n\tmtsprg3 3" : : : "r3");
+
+  u32 sdr1;
+  asm volatile("mfsdr1 %0" : "=r"(sdr1));
+  for (u32 i = 0; i < 0x10000 / 4; i++)
+    PAGE_TABLE[i] = 0;
+  FlushCode(PAGE_TABLE, 0x10000);
+  asm volatile("mtsdr1 %0\n\tsync\n\ttlbsync\n\tsync" : : "r"((u32)PAGE_TABLE & 0x3FFFFFFF));
+  for (u32 page = 0; page < 0x100000; page += 0x1000)
+    asm volatile("tlbie %0" : : "r"(page));
+  asm volatile("sync\n\ttlbsync\n\tsync");
+
+  for (int i = 0; i < 50; i++)
+  {
+    BeginIteration();
+    u8* const bad = (u8*)(0x40000000 + (Random() & 0xFFFFF0));
+    const u32 index = Random() % 4096;
+    const u32 value = Value();
+    const double fvalue = FloatValue();
+
+    DSI_LOAD("lbz", 1);
+    DSI_LOAD("lhz", 2);
+    DSI_LOAD("lha", -2);
+    DSI_LOAD("lwz", 4);
+    DSI_LOADX("lwzx");
+    DSI_LOADX("lhbrx");
+    DSI_LOADX("lwbrx");
+    DSI_LOADU("lbzu", 1);
+    DSI_LOADU("lhau", 2);
+    DSI_LOADU("lwzu", 8);
+    DSI_LOADUX("lwzux");
+    DSI_STORE("stb", 1);
+    DSI_STORE("sth", 2);
+    DSI_STORE("stw", 4);
+    DSI_STOREX("stwx");
+    DSI_STOREX("sthbrx");
+    DSI_STOREU("stbu", 1);
+    DSI_STOREU("stwu", 8);
+    DSI_FLOAD("lfs", 4);
+    DSI_FLOAD("lfd", 8);
+    DSI_FLOAD("lfsu", 4);
+    DSI_FLOAD("lfdu", 8);
+    DSI_FSTORE("stfs", 4);
+    DSI_FSTORE("stfd", 8);
+    DSI_FSTORE("stfdu", 8);
+
+    // Quantized, with GQR0, whose types are float.
+    {
+      double ps0 = fvalue, ps1;
+      u8* p_ = bad;
+      asm volatile("ps_merge00 %0,%0,%0\n\tpsq_lu %0,8(%2),0,0\n\tps_merge11 %1,%0,%0"
+                   : "+f"(ps0), "=f"(ps1), "+b"(p_)
+                   :
+                   : "memory");
+      RecordDSI("psq_lu", (u32)Bits(ps0) ^ (u32)(Bits(ps1) >> 32), (u32)(p_ - bad));
+      p_ = bad;
+      asm volatile("psq_stu %1,8(%0),0,0" : "+b"(p_) : "f"(fvalue) : "memory");
+      RecordDSI("psq_stu", (u32)(p_ - bad), 0);
+    }
+
+    // A fault in the middle of a block: what the instructions before and after it wrote must
+    // be kept, and what it would have written must not.
+    {
+      u32 a = value, b = value ^ 0x5A5A5A5A;
+      double f = fvalue, g = fvalue;
+      asm volatile("addi %0,%0,1\n\tfadd %2,%2,%2\n\tlwz %1,0(%4)\n\taddi %0,%0,2\n\t"
+                   "lfd %3,0(%4)\n\tfadd %2,%2,%2"
+                   : "+r"(a), "+r"(b), "+f"(f), "+f"(g)
+                   : "b"(bad)
+                   : "memory");
+      RecordDSI("mid-block", a, b);
+      Mix64(Bits(f));
+      Mix64(Bits(g));
+    }
+  }
+
+  asm volatile("mtsdr1 %0\n\tsync" : : "r"(sdr1));
+  u32 count;
+  asm volatile("mfsprg1 %0" : "=r"(count));
+  OSReport("TEST dsi count %u\n", count);
+  End("dsi");
+}
+#endif
+
 static void TestExceptions(void)
 {
   Begin();
@@ -1317,6 +1497,9 @@ int main(void)
   TestQuantizedCompiled();
   TestSelfModifyingCode();
   TestExceptions();
+#ifdef TEST_DSI
+  TestDSI();
+#endif
   // Dolphin's printf takes the first word of the format string for a pointer to a this argument if
   // it looks like an address, as "DONE" does, so start every report with "TEST".
   OSReport("TEST done\n");

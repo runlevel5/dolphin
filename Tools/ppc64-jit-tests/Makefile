@@ -11,7 +11,7 @@ CFLAGS = -m32 -mcpu=750 -mbig-endian -O2 -ffreestanding -fno-builtin -nostdlib -
 	-fno-stack-protector -fno-asynchronous-unwind-tables -Wa,-mgekko
 LDFLAGS = -static -Wl,-T,link.ld -Wl,--build-id=none -Wl,-z,noexecstack
 
-all: cputest.elf cputest-jit.elf cputest-jit-fprf.elf
+all: cputest.elf cputest-jit.elf cputest-jit-fprf.elf cputest-mmu.elf
 
 cputest.elf: crt0.S cputest.c link.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ crt0.S cputest.c
@@ -24,5 +24,9 @@ cputest-jit.elf: crt0.S cputest.c link.ld
 cputest-jit-fprf.elf: crt0.S cputest.c link.ld
 	$(CC) $(CFLAGS) -DFPSCR_MASK=0x1F0FFu $(LDFLAGS) -o $@ crt0.S cputest.c
 
+# Also tests data storage exceptions, which need MMU mode: run it with -C Dolphin.Core.MMU=True.
+cputest-mmu.elf: crt0.S cputest.c link.ld
+	$(CC) $(CFLAGS) -DFPSCR_MASK=0xFFu -DTEST_DSI $(LDFLAGS) -o $@ crt0.S cputest.c
+
 clean:
-	rm -f cputest.elf cputest-jit.elf cputest-jit-fprf.elf
+	rm -f cputest.elf cputest-jit.elf cputest-jit-fprf.elf cputest-mmu.elf

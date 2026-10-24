@@ -63,7 +63,6 @@ void JitPPC64::lfXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStoreFloatingOff);
-  FALLBACK_IF(jo.memcheck);
 
   bool single = false;
   bool indexed = false;
@@ -113,11 +112,11 @@ void JitPPC64::lfXX(UGeckoInstruction inst)
   const auto value = gpr.GetScopedReg();
   ComputeAddress(addr, inst, indexed);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
-  // lfd only writes ps0.
-  const VSR d = fpr.RW(inst.FD, !single);
 
   EmitMemoryAccess({.size = single ? 32u : 64u}, value, addr);
 
+  // lfd only writes ps0.
+  const VSR d = fpr.RW(inst.FD, !single);
   if (single)
   {
     // As ConvertToDouble, into both halves.
@@ -141,7 +140,6 @@ void JitPPC64::stfXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStoreFloatingOff);
-  FALLBACK_IF(jo.memcheck);
 
   bool single = false;
   bool integer = false;

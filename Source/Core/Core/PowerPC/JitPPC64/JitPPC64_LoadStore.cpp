@@ -315,6 +315,11 @@ void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
       CLRLDI(GPR::R4, value, 32);
   }
   BL(m_slow_access_routines[SlowAccessRoutineIndex(access)]);
+  // With memory checks, an access the MMU can't translate raises a DSI exception, which is taken
+  // before the instruction writes any register: instructions bind the registers they write after
+  // their access.
+  if (jo.memcheck)
+    WriteConditionalExceptionExit(EXCEPTION_DSI, GPR::R12);
   if (!access.store)
     MR(value, GPR::R3);
 }
@@ -342,7 +347,6 @@ void JitPPC64::lXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStoreOff);
-  FALLBACK_IF(jo.memcheck);
 
   MemAccess access{};
   bool indexed = false;
@@ -427,9 +431,17 @@ void JitPPC64::lXX(UGeckoInstruction inst)
   const auto addr = gpr.GetScopedReg();
   ComputeAddress(addr, inst, indexed);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
-  const GPR d = gpr.RW(inst.RD);
 
-  EmitMemoryAccess(access, d, addr);
+  if (jo.memcheck)
+  {
+    const auto value = gpr.GetScopedReg();
+    EmitMemoryAccess(access, value, addr);
+    MR(gpr.RW(inst.RD), value);
+  }
+  else
+  {
+    EmitMemoryAccess(access, gpr.RW(inst.RD), addr);
+  }
 
   if (update)
     MR(a, addr);
@@ -439,7 +451,6 @@ void JitPPC64::stX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStoreOff);
-  FALLBACK_IF(jo.memcheck);
 
   MemAccess access{.store = true};
   bool indexed = false;

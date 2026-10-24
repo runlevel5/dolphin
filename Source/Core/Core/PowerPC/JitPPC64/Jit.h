@@ -203,6 +203,7 @@ private:
   void EmitSlowAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
   static u32 SlowAccessRoutineIndex(MemAccess access);
   void GenerateSlowAccessRoutines();
+  void GenerateExceptionExitRoutine();
   void GenerateSlowAccessRoutine(MemAccess access);
   bool HandleFastmemFault(SContext* ctx);
 
@@ -270,7 +271,9 @@ private:
   void WriteExceptionExit(PPC64Gen::GPR dest, bool only_external = false,
                           bool always_exception = false);
   // Exits at the current instruction if the given exception is pending.
-  void WriteConditionalExceptionExit(u32 exception);
+  // Takes the pending exception at this instruction.
+  void WriteTakeExceptionExit();
+  void WriteConditionalExceptionExit(u32 exception, PPC64Gen::GPR tmp = PPC64Gen::GPR::R3);
 
   void LogGeneratedCode() const;
 
@@ -314,6 +317,8 @@ private:
   std::map<const u8*, const u8*> m_fault_to_handler;
 
   std::array<const u8*, 32> m_slow_access_routines{};
+  // Takes a pending exception at the PC in R3, after subtracting the cycles in R4.
+  const u8* m_exception_exit_routine = nullptr;
 
   std::unique_ptr<HostDisassembler> m_disassembler;
 };

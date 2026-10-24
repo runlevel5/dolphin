@@ -230,7 +230,26 @@ void JitPPC64::GenerateAsm()
 
   const u8* routines_start = GetCodePtr();
   GenerateSlowAccessRoutines();
+  GenerateExceptionExitRoutine();
   Common::JitRegister::Register(routines_start, GetCodePtr(), "JIT_SlowAccess");
 
   FlushIcache();
+}
+
+void JitPPC64::GenerateExceptionExitRoutine()
+{
+  // The end of WriteExceptionExit(pc, false, true), shared by the conditional exception exits,
+  // which are many in far code: memory checks give every load and store one.
+  m_exception_exit_routine = GetCodePtr();
+  STW(GPR::R3, PPC_REG, PPCSTATE_OFF(pc));
+  STW(GPR::R3, PPC_REG, PPCSTATE_OFF(npc));
+  // DISPATCHER_PC is non-volatile, so it keeps the cycles across the call.
+  MR(DISPATCHER_PC, GPR::R4);
+  ABI_CallFunction(&PowerPC::CheckExceptionsFromJIT, &m_system.GetPowerPC());
+  // As DoDownCount, which sets CR0 for the dispatcher.
+  LWA(GPR::R3, PPC_REG, PPCSTATE_OFF(downcount));
+  SUBF(GPR::R3, DISPATCHER_PC, GPR::R3, true);
+  STW(GPR::R3, PPC_REG, PPCSTATE_OFF(downcount));
+  LWZ(DISPATCHER_PC, PPC_REG, PPCSTATE_OFF(npc));
+  B(dispatcher);
 }
