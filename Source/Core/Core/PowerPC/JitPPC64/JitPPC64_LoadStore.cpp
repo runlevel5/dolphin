@@ -189,90 +189,134 @@ void JitPPC64::EmitFastAccess(MemAccess access, GPR value, GPR addr)
   }
 }
 
-void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
+u32 JitPPC64::SlowAccessRoutineIndex(MemAccess access)
 {
-  // A load overwrites its destination anyway.
-  BitSet32 except{};
-  if (!access.store)
-    except[DecodeReg(value)] = true;
-  const BitSet32 saved = SaveScratchRegs(except);
+  const u32 size_index = access.size == 64 ? 3 : access.size == 32 ? 2 : access.size == 16 ? 1 : 0;
+  return (access.store ? 16 : 0) | (size_index << 2) | (access.sign_extend ? 2 : 0) |
+         (access.reverse ? 1 : 0);
+}
 
-  // The PC is used by memory checks and in logs.
-  MOVI2R(GPR::R3, js.compilerPC);
-  STW(GPR::R3, PPC_REG, PPCSTATE_OFF(pc));
+void JitPPC64::GenerateSlowAccessRoutines()
+{
+  // The slow path of each kind of access, shared by the accesses, which keeps far code small. They
+  // take the address in R3, zero-extended, and a stored value in R4, zero-extended to its size,
+  // return a loaded value in R3, and preserve the scratch registers.
+  m_slow_access_routines = {};
+  for (const bool store : {false, true})
+  {
+    for (const u32 size : {8u, 16u, 32u, 64u})
+    {
+      for (const bool sign_extend : {false, true})
+      {
+        for (const bool reverse : {false, true})
+        {
+          if ((sign_extend && (store || size != 16)) || (reverse && (size == 8 || size == 64)) ||
+              (sign_extend && reverse))
+          {
+            continue;
+          }
+          const MemAccess access{store, size, sign_extend, reverse};
+          m_slow_access_routines[SlowAccessRoutineIndex(access)] = GetCodePtr();
+          GenerateSlowAccessRoutine(access);
+        }
+      }
+    }
+  }
+}
 
-  // Pass the address and value in registers that aren't argument registers, zero-extended as the
-  // ABI requires.
-  CLRLDI(GPR::R12, addr, 32);
+void JitPPC64::GenerateSlowAccessRoutine(MemAccess access)
+{
+  MFLR(GPR::R0);
+  STD(GPR::R0, GPR::SP, ROUTINE_LR_SAVE);
+  for (u32 i = 5; i <= 11; i++)
+    STD(static_cast<GPR>(i), GPR::SP, ScratchSaveOffset(static_cast<GPR>(i)));
+
   if (access.store)
   {
-    if (access.size == 64)
-      MR(GPR::R0, value);
-    else
-      CLRLDI(GPR::R0, value, 32);
+    MR(GPR::R5, GPR::R3);
     switch (access.size)
     {
     case 64:
-      ABI_CallFunction(&PowerPC::WriteFromJit<u64>, &m_mmu, GPR::R0, GPR::R12);
+      ABI_CallFunction(&PowerPC::WriteFromJit<u64>, &m_mmu, GPR::R4, GPR::R5);
       break;
     case 32:
       ABI_CallFunction(access.reverse ? &PowerPC::WriteU32SwapFromJit : &PowerPC::WriteFromJit<u32>,
-                       &m_mmu, GPR::R0, GPR::R12);
+                       &m_mmu, GPR::R4, GPR::R5);
       break;
     case 16:
       ABI_CallFunction(access.reverse ? &PowerPC::WriteU16SwapFromJit : &PowerPC::WriteFromJit<u16>,
-                       &m_mmu, GPR::R0, GPR::R12);
+                       &m_mmu, GPR::R4, GPR::R5);
       break;
     default:
-      ABI_CallFunction(&PowerPC::WriteFromJit<u8>, &m_mmu, GPR::R0, GPR::R12);
+      ABI_CallFunction(&PowerPC::WriteFromJit<u8>, &m_mmu, GPR::R4, GPR::R5);
       break;
     }
   }
   else
   {
+    MR(GPR::R4, GPR::R3);
     switch (access.size)
     {
     case 64:
-      ABI_CallFunction(&PowerPC::ReadFromJit<u64>, &m_mmu, GPR::R12);
-      MR(value, GPR::R3);
+      ABI_CallFunction(&PowerPC::ReadFromJit<u64>, &m_mmu, GPR::R4);
       break;
     case 32:
-      ABI_CallFunction(&PowerPC::ReadFromJit<u32>, &m_mmu, GPR::R12);
+      ABI_CallFunction(&PowerPC::ReadFromJit<u32>, &m_mmu, GPR::R4);
       if (access.reverse)
       {
-        ROTLWI(value, GPR::R3, 8);
-        RLWIMI(value, GPR::R3, 24, 0, 7);
-        RLWIMI(value, GPR::R3, 24, 16, 23);
-      }
-      else
-      {
-        MR(value, GPR::R3);
+        ROTLWI(GPR::R4, GPR::R3, 8);
+        RLWIMI(GPR::R4, GPR::R3, 24, 0, 7);
+        RLWIMI(GPR::R4, GPR::R3, 24, 16, 23);
+        MR(GPR::R3, GPR::R4);
       }
       break;
     case 16:
-      ABI_CallFunction(&PowerPC::ReadFromJit<u16>, &m_mmu, GPR::R12);
+      ABI_CallFunction(&PowerPC::ReadFromJit<u16>, &m_mmu, GPR::R4);
       if (access.reverse)
       {
-        RLWINM(value, GPR::R3, 24, 24, 31);
-        RLWIMI(value, GPR::R3, 8, 16, 23);
+        RLWINM(GPR::R4, GPR::R3, 24, 24, 31);
+        RLWIMI(GPR::R4, GPR::R3, 8, 16, 23);
+        MR(GPR::R3, GPR::R4);
       }
       else if (access.sign_extend)
       {
-        EXTSH(value, GPR::R3);
-      }
-      else
-      {
-        MR(value, GPR::R3);
+        EXTSH(GPR::R3, GPR::R3);
       }
       break;
     default:
-      ABI_CallFunction(&PowerPC::ReadFromJit<u8>, &m_mmu, GPR::R12);
-      MR(value, GPR::R3);
+      ABI_CallFunction(&PowerPC::ReadFromJit<u8>, &m_mmu, GPR::R4);
       break;
     }
   }
 
-  RestoreScratchRegs(saved);
+  for (u32 i = 5; i <= 11; i++)
+    LD(static_cast<GPR>(i), GPR::SP, ScratchSaveOffset(static_cast<GPR>(i)));
+  LD(GPR::R0, GPR::SP, ROUTINE_LR_SAVE);
+  MTLR(GPR::R0);
+  BLR();
+}
+
+void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
+{
+  // The routine saves the scratch registers, which are volatile; guest registers are
+  // non-volatile. No scratch VSX registers may be in use.
+  ASSERT(!fpr.AnyScratchRegsInUse());
+
+  // The PC is used by memory checks, by GPFifo to find stores to the gather pipe, and in logs.
+  MOVI2R(GPR::R12, js.compilerPC);
+  STW(GPR::R12, PPC_REG, PPCSTATE_OFF(pc));
+
+  CLRLDI(GPR::R3, addr, 32);
+  if (access.store)
+  {
+    if (access.size == 64)
+      MR(GPR::R4, value);
+    else
+      CLRLDI(GPR::R4, value, 32);
+  }
+  BL(m_slow_access_routines[SlowAccessRoutineIndex(access)]);
+  if (!access.store)
+    MR(value, GPR::R3);
 }
 
 bool JitPPC64::HandleFastmemFault(SContext* ctx)

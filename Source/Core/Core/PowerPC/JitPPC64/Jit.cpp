@@ -40,7 +40,8 @@ namespace
 // directly to any other code, including the dispatcher. Near code, which starts with the
 // dispatcher, comes first, then far code.
 constexpr size_t CODE_SIZE = 32 * 1024 * 1024;
-constexpr size_t NEAR_CODE_SIZE = 24 * 1024 * 1024;
+// Each memory access has a slow path in far code, so far code is about 80% the size of near code.
+constexpr size_t NEAR_CODE_SIZE = 18 * 1024 * 1024;
 }  // namespace
 
 JitPPC64::JitPPC64(Core::System& system)

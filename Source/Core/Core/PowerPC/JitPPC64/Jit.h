@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -173,6 +174,8 @@ public:
   // The stack frame saves the scratch registers, which are volatile, around calls from slow paths.
   static constexpr s32 SCRATCH_SAVE = PPC64Gen::STACK_FRAME_MIN_SIZE + 8 * 8;
   static constexpr s32 SCRATCH_SAVE_SIZE = 8 * 7;
+  // And LR, in routines that make calls.
+  static constexpr s32 ROUTINE_LR_SAVE = SCRATCH_SAVE + SCRATCH_SAVE_SIZE;
   static constexpr s32 ScratchSaveOffset(PPC64Gen::GPR reg)
   {
     return SCRATCH_SAVE + 8 * (PPC64Gen::DecodeReg(reg) - 5);
@@ -198,6 +201,9 @@ private:
   BitSet32 SaveScratchRegs(BitSet32 except = {});
   void RestoreScratchRegs(BitSet32 saved);
   void EmitSlowAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
+  static u32 SlowAccessRoutineIndex(MemAccess access);
+  void GenerateSlowAccessRoutines();
+  void GenerateSlowAccessRoutine(MemAccess access);
   bool HandleFastmemFault(SContext* ctx);
 
   // Slow paths go in far code, out of the way of the code that runs.
@@ -306,6 +312,8 @@ private:
 
   // The fastmem accesses that haven't faulted yet, and their slow paths.
   std::map<const u8*, const u8*> m_fault_to_handler;
+
+  std::array<const u8*, 32> m_slow_access_routines{};
 
   std::unique_ptr<HostDisassembler> m_disassembler;
 };
