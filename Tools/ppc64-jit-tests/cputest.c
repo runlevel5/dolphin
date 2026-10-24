@@ -191,7 +191,9 @@ static void TestIntegerArithmetic(void)
     OP1("addzeo");
     OP1("addme");
     OP1("addme.");
+    OP1("addmeo.");
     OP1("subfze.");
+    OP1("subfzeo");
     OP1("subfme.");
     OP1("subfmeo");
     OPI("addi", -5);
@@ -483,6 +485,38 @@ static void TestMMIO(void)
   }
   *(volatile u32*)base = saved;
   End("mmio");
+}
+
+// Reservations, eieio, and segment registers.
+static void TestReservationsAndSegments(void)
+{
+  Begin();
+  static u32 word __attribute__((aligned(32)));
+  for (int i = 0; i < 200; i++)
+  {
+    BeginIteration();
+    word = Random();
+    const u32 value = Value();
+    // A reservation, a store conditional that succeeds, and one that fails without a reservation.
+    u32 old, cr_stored, cr_failed;
+    asm volatile("mtxer %5\n\tlwarx %0,0,%3\n\tadd %0,%0,%4\n\tstwcx. %0,0,%3\n\tmfcr %1\n\t"
+                 "stwcx. %4,0,%3\n\tmfcr %2"
+                 : "=&r"(old), "=&r"(cr_stored), "=&r"(cr_failed)
+                 : "b"(&word), "r"(value), "r"(Random() & 0x80000000)
+                 : "cr0", "xer", "memory");
+    Record("lwarx", old, cr_stored >> 28, cr_failed >> 28);
+    Mix(word);
+
+    asm volatile("eieio");
+
+    // Write a segment register and read it back, by number and by address, then restore it.
+    u32 saved, by_number, by_address;
+    asm volatile("mfsr %0,5\n\tmtsr 5,%3\n\tmfsr %1,5\n\tmfsrin %2,%4\n\tmtsr 5,%0"
+                 : "=&r"(saved), "=&r"(by_number), "=&r"(by_address)
+                 : "r"(Random() & 0x70FFFFFF), "r"(0x50000000 | (Random() & 0x0FFFFFFF)));
+    Record("mtsr", by_number, by_address, 0);
+  }
+  End("reservations-segments");
 }
 
 static u32 Fibonacci(u32 n)
@@ -1527,6 +1561,17 @@ static void TestDSI(void)
 
     asm volatile("dcbz 0,%0" : : "b"(bad) : "memory");
     RecordDSI("dcbz", 0, 0);
+    // lwarx and stwcx. need aligned addresses.
+    {
+      u32 r_ = value, cr;
+      asm volatile("lwarx %0,%1,%2" : "+r"(r_) : "b"(bad), "r"(index & ~3) : "memory");
+      RecordDSI("lwarx", r_, 0);
+      asm volatile("stwcx. %1,%2,%3\n\tmfcr %0"
+                   : "=r"(cr)
+                   : "r"(value), "b"(bad), "r"(index & ~3)
+                   : "cr0", "memory");
+      RecordDSI("stwcx.", cr >> 28, 0);
+    }
 
     // Load and store multiple words: the registers keep their values.
     {
@@ -1616,6 +1661,7 @@ int main(void)
   TestCompareAndConditionRegister();
   TestLoadsAndStores();
   TestMMIO();
+  TestReservationsAndSegments();
   TestBranches();
   TestRegisterPressure();
   TestFloatingPoint(0);

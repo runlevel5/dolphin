@@ -101,7 +101,7 @@ constexpr std::array<JitPPC64OpTemplate, 13> s_table4{{
     {592, &JitPPC64::ps_mergeXX},  // ps_merge10
     {624, &JitPPC64::ps_mergeXX},  // ps_merge11
 
-    {1014, &JitPPC64::FallBackToInterpreter},  // dcbz_l
+    {1014, &JitPPC64::InterpretInstruction},  // dcbz_l
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 17> s_table4_2{{
@@ -228,8 +228,8 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {790, &JitPPC64::lXX},  // lhbrx
 
     // Conditional load/store (Wii SMP)
-    {150, &JitPPC64::FallBackToInterpreter},  // stwcxd
-    {20, &JitPPC64::FallBackToInterpreter},   // lwarx
+    {150, &JitPPC64::InterpretInstruction},  // stwcxd
+    {20, &JitPPC64::InterpretInstruction},   // lwarx
 
     // load string (interpret these)
     {533, &JitPPC64::FallBackToInterpreter},  // lswx
@@ -266,29 +266,29 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {759, &JitPPC64::stfXX},  // stfdux
     {983, &JitPPC64::stfXX},  // stfiwx
 
-    {19, &JitPPC64::mfcr},                    // mfcr
-    {83, &JitPPC64::mfmsr},                   // mfmsr
-    {144, &JitPPC64::mtcrf},                  // mtcrf
-    {146, &JitPPC64::mtmsr},                  // mtmsr
-    {210, &JitPPC64::FallBackToInterpreter},  // mtsr
-    {242, &JitPPC64::FallBackToInterpreter},  // mtsrin
-    {339, &JitPPC64::mfspr},                  // mfspr
-    {467, &JitPPC64::mtspr},                  // mtspr
-    {371, &JitPPC64::mfspr},                  // mftb
-    {512, &JitPPC64::InterpretInstruction},   // mcrxr
-    {595, &JitPPC64::FallBackToInterpreter},  // mfsr
-    {659, &JitPPC64::FallBackToInterpreter},  // mfsrin
+    {19, &JitPPC64::mfcr},                   // mfcr
+    {83, &JitPPC64::mfmsr},                  // mfmsr
+    {144, &JitPPC64::mtcrf},                 // mtcrf
+    {146, &JitPPC64::mtmsr},                 // mtmsr
+    {210, &JitPPC64::InterpretInstruction},  // mtsr
+    {242, &JitPPC64::InterpretInstruction},  // mtsrin
+    {339, &JitPPC64::mfspr},                 // mfspr
+    {467, &JitPPC64::mtspr},                 // mtspr
+    {371, &JitPPC64::mfspr},                 // mftb
+    {512, &JitPPC64::InterpretInstruction},  // mcrxr
+    {595, &JitPPC64::InterpretInstruction},  // mfsr
+    {659, &JitPPC64::InterpretInstruction},  // mfsrin
 
     {4, &JitPPC64::FallBackToInterpreter},    // tw
     {598, &JitPPC64::DoNothing},              // sync
     {982, &JitPPC64::FallBackToInterpreter},  // icbi
 
     // Unused instructions on GC
-    {310, &JitPPC64::FallBackToInterpreter},  // eciwx
-    {438, &JitPPC64::FallBackToInterpreter},  // ecowx
-    {854, &JitPPC64::FallBackToInterpreter},  // eieio
-    {306, &JitPPC64::FallBackToInterpreter},  // tlbie
-    {566, &JitPPC64::DoNothing},              // tlbsync
+    {310, &JitPPC64::InterpretInstruction},  // eciwx
+    {438, &JitPPC64::InterpretInstruction},  // ecowx
+    {854, &JitPPC64::DoNothing},             // eieio
+    {306, &JitPPC64::InterpretInstruction},  // tlbie
+    {566, &JitPPC64::DoNothing},             // tlbsync
 }};
 
 constexpr std::array<JitPPC64OpTemplate, 9> s_table59{{

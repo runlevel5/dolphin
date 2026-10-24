@@ -295,7 +295,7 @@ void JitPPC64::addx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const GPR a = gpr.R(inst.RA);
   const GPR b = gpr.R(inst.RB);
@@ -309,7 +309,7 @@ void JitPPC64::addcx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const GPR a = gpr.R(inst.RA);
   const GPR b = gpr.R(inst.RB);
@@ -323,7 +323,7 @@ void JitPPC64::addex(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const GPR a = gpr.R(inst.RA);
   if (inst.SUBOP10 == 234)
@@ -349,7 +349,7 @@ void JitPPC64::addzex(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const auto zero = gpr.GetScopedReg();
   LI(zero, 0);
@@ -364,7 +364,7 @@ void JitPPC64::subfx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const GPR a = gpr.R(inst.RA);
   const GPR b = gpr.R(inst.RB);
@@ -391,7 +391,7 @@ void JitPPC64::subfex(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   // d = ~a + b + CA, or ~a - 1 + CA for subfme
   const auto not_a = gpr.GetScopedReg();
@@ -417,7 +417,7 @@ void JitPPC64::subfzex(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   // d = ~a + CA
   const auto not_a = gpr.GetScopedReg();
@@ -434,7 +434,7 @@ void JitPPC64::negx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const GPR a = gpr.R(inst.RA);
   const GPR d = gpr.RW(inst.RD);
@@ -447,7 +447,7 @@ void JitPPC64::mullwx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   const GPR a = gpr.R(inst.RA);
   const GPR b = gpr.R(inst.RB);
@@ -487,7 +487,7 @@ void JitPPC64::divwx(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   // The host leaves the result undefined when dividing by zero, or 0x80000000 by -1. As the
   // interpreter, the result is then -1 if the dividend is negative, and 0 otherwise.
@@ -521,7 +521,7 @@ void JitPPC64::divwux(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITIntegerOff);
-  FALLBACK_IF(inst.OE);
+  INTERPRET_IF(inst.OE);
 
   // The interpreter returns 0 when dividing by zero, where the host leaves it undefined.
   const GPR a = gpr.R(inst.RA);

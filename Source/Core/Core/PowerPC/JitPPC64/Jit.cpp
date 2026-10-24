@@ -258,10 +258,10 @@ void JitPPC64::SingleStep()
 
 void JitPPC64::InterpretInstruction(UGeckoInstruction inst)
 {
-  // For instructions that only use the registers the analyzer lists, with CR, XER, FPSCR and SPRs,
-  // and don't access memory, change MSR or end the block: the interpreter works on PowerPCState,
-  // but only these registers have to be written back first, and the ones it writes dropped after,
-  // which spares flushing the others.
+  // For instructions that only use the registers the analyzer lists, with CR, XER, FPSCR, SPRs
+  // and memory, and don't change MSR or end the block: the interpreter works on PowerPCState, but
+  // only these registers have to be written back first, and the ones it writes dropped after,
+  // which spares flushing the others. After a DSI exception, those hold what they held before.
   ASSERT(!js.op->canEndBlock);
   BitSet32 fprs = js.op->fregsIn;
   if (js.op->fregOut >= 0)
@@ -284,6 +284,8 @@ void JitPPC64::InterpretInstruction(UGeckoInstruction inst)
 
   if (ShouldHandleFPExceptionForInstruction(js.op))
     WriteConditionalExceptionExit(EXCEPTION_PROGRAM);
+  if (jo.memcheck && (js.op->opinfo->flags & FL_LOADSTORE))
+    WriteConditionalExceptionExit(EXCEPTION_DSI);
 }
 
 void JitPPC64::FallBackToInterpreter(UGeckoInstruction inst)
