@@ -596,10 +596,11 @@ void JitPPC64::lmw_stmw(UGeckoInstruction inst)
 {
   INSTRUCTION_START
   JITDISABLE(bJITLoadStoreOff);
-  FALLBACK_IF(jo.memcheck);
 
   // These access up to 32 guest registers, more than fit in host registers at once, so they work on
   // PowerPCState: lmw flushes the registers it overwrites, and stmw writes back the ones it stores.
+  // With memory checks, a DSI exception leaves the words before it loaded or stored, as the
+  // interpreter does.
   const bool store = inst.OPCD == 47;
   const auto addr = gpr.GetScopedReg();
   if (inst.RA == 0)

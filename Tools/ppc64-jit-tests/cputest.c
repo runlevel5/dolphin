@@ -1439,6 +1439,23 @@ static void TestDSI(void)
       RecordDSI("psq_stu gqr", (u32)(p_ - bad), 0);
     }
 
+    // Load and store multiple words: the registers keep their values.
+    {
+      u32 words[4] = {value, value + 1, value + 2, value + 3};
+      u8* const p_ = bad;
+      asm volatile("mr 28,%0\n\tmr 29,%1\n\tmr 30,%2\n\tmr 31,%3\n\tlmw 28,0(%4)\n\t"
+                   "mr %0,28\n\tmr %1,29\n\tmr %2,30\n\tmr %3,31"
+                   : "+r"(words[0]), "+r"(words[1]), "+r"(words[2]), "+r"(words[3])
+                   : "b"(p_)
+                   : "r28", "r29", "r30", "r31", "memory");
+      RecordDSI("lmw", words[0] ^ words[1], words[2] ^ words[3]);
+      asm volatile("mr 28,%0\n\tmr 29,%1\n\tmr 30,%0\n\tmr 31,%1\n\tstmw 28,0(%2)"
+                   :
+                   : "r"(value), "r"(index), "b"(p_)
+                   : "r28", "r29", "r30", "r31", "memory");
+      RecordDSI("stmw", 0, 0);
+    }
+
     // A fault in the middle of a block: what the instructions before and after it wrote must
     // be kept, and what it would have written must not.
     {
