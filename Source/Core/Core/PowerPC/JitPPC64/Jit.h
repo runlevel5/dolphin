@@ -136,6 +136,8 @@ public:
   // Loads and stores
   void lXX(UGeckoInstruction inst);
   void stX(UGeckoInstruction inst);
+  void dcbx(UGeckoInstruction inst);
+  void lmw_stmw(UGeckoInstruction inst);
 
   // Floating-point loads and stores
   void lfXX(UGeckoInstruction inst);
@@ -190,7 +192,11 @@ private:
   void ComputeAddress(PPC64Gen::GPR addr, UGeckoInstruction inst, bool indexed);
   // Loads into or stores from value, at the address in addr.
   void EmitMemoryAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
+  void EmitMemoryAccessToAddress(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
   void EmitFastAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
+  // Saves the scratch GPRs in use, but not those in except, around a call. Returns the ones saved.
+  BitSet32 SaveScratchRegs(BitSet32 except = {});
+  void RestoreScratchRegs(BitSet32 saved);
   void EmitSlowAccess(MemAccess access, PPC64Gen::GPR value, PPC64Gen::GPR addr);
   bool HandleFastmemFault(SContext* ctx);
 

@@ -15,8 +15,11 @@
 #include "Common/CommonTypes.h"
 #include "Common/MemoryUtil.h"
 #include "Common/PPC64Emitter.h"
+#include "Core/HW/GPFifo.h"
 #include "Core/HW/Memmap.h"
 #include "Core/PowerPC/Gekko.h"
+#include "Core/PowerPC/Interpreter/Interpreter.h"
+#include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/System.h"
@@ -47,7 +50,85 @@ void JitPPC64::ComputeAddress(GPR addr, UGeckoInstruction inst, bool indexed)
   CLRLDI(addr, addr, 32);
 }
 
+BitSet32 JitPPC64::SaveScratchRegs(BitSet32 except)
+{
+  // Scratch registers are volatile, so save those in use around a call; guest registers are
+  // non-volatile. No scratch VSX registers may be in use.
+  ASSERT(!fpr.AnyScratchRegsInUse());
+  const BitSet32 saved = gpr.GetScratchRegsInUse() & ~except;
+  for (const int i : saved)
+    STD(static_cast<GPR>(i), GPR::SP, ScratchSaveOffset(static_cast<GPR>(i)));
+  return saved;
+}
+
+void JitPPC64::RestoreScratchRegs(BitSet32 saved)
+{
+  for (const int i : saved)
+    LD(static_cast<GPR>(i), GPR::SP, ScratchSaveOffset(static_cast<GPR>(i)));
+}
+
 void JitPPC64::EmitMemoryAccess(MemAccess access, GPR value, GPR addr)
+{
+  // Stores that wrote to the gather pipe before, through the slow path, write to it directly when
+  // they're to its address, which fastmem can't do. Like GPFifo's writes, they burst the pipe as
+  // soon as it's full.
+  constexpr u32 gather_pipe_address = 0xCC008000;
+  if (access.store && js.fifoWriteAddresses.TestBit(js.compilerPC / sizeof(UGeckoInstruction)) &&
+      m_mmu.IsOptimizableGatherPipeWrite(gather_pipe_address))
+  {
+    const auto ptr = gpr.GetScopedReg();
+    MOVI2R(ptr, gather_pipe_address);
+    CMPLW(CRF::CR1, addr, ptr);
+    const FixupBranch not_gather_pipe = BC(CCFlags::NE, CRF::CR1);
+
+    LD(ptr, PPC_REG, PPCSTATE_OFF(gather_pipe_ptr));
+    switch (access.size)
+    {
+    case 64:
+      STDBRX(value, GPR::R0, ptr);
+      break;
+    case 32:
+      access.reverse ? STWX(value, GPR::R0, ptr) : STWBRX(value, GPR::R0, ptr);
+      break;
+    case 16:
+      access.reverse ? STHX(value, GPR::R0, ptr) : STHBRX(value, GPR::R0, ptr);
+      break;
+    default:
+      STBX(value, GPR::R0, ptr);
+      break;
+    }
+    ADDI(ptr, ptr, static_cast<s16>(access.size / 8));
+    STD(ptr, PPC_REG, PPCSTATE_OFF(gather_pipe_ptr));
+    {
+      const auto base = gpr.GetScopedReg();
+      LD(base, PPC_REG, PPCSTATE_OFF(gather_pipe_base_ptr));
+      SUBF(ptr, base, ptr);
+    }
+    CMPLDI(CRF::CR1, ptr, GPFifo::GATHER_PIPE_SIZE);
+    const FixupBranch full = BCFar(CCFlags::GE, CRF::CR1);
+    const u8* written = GetCodePtr();
+
+    SwitchToFarCode();
+    SetJumpTarget(full);
+    {
+      const BitSet32 saved = SaveScratchRegs();
+      ABI_CallFunction(&GPFifo::UpdateGatherPipe, &m_system.GetGPFifo());
+      RestoreScratchRegs(saved);
+    }
+    B(written);
+    SwitchToNearCode();
+
+    const FixupBranch done = B();
+    SetJumpTarget(not_gather_pipe);
+    EmitMemoryAccessToAddress(access, value, addr);
+    SetJumpTarget(done);
+    return;
+  }
+
+  EmitMemoryAccessToAddress(access, value, addr);
+}
+
+void JitPPC64::EmitMemoryAccessToAddress(MemAccess access, GPR value, GPR addr)
 {
   if (!jo.fastmem || m_accurate_cpu_cache_enabled)
   {
@@ -110,14 +191,11 @@ void JitPPC64::EmitFastAccess(MemAccess access, GPR value, GPR addr)
 
 void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
 {
-  // Scratch registers are volatile, so save those in use around the call; guest registers are
-  // non-volatile. A load overwrites its destination anyway. No scratch VSX registers may be in use.
-  ASSERT(!fpr.AnyScratchRegsInUse());
-  BitSet32 to_save = gpr.GetScratchRegsInUse();
+  // A load overwrites its destination anyway.
+  BitSet32 except{};
   if (!access.store)
-    to_save[DecodeReg(value)] = false;
-  for (const int i : to_save)
-    STD(static_cast<GPR>(i), GPR::SP, ScratchSaveOffset(static_cast<GPR>(i)));
+    except[DecodeReg(value)] = true;
+  const BitSet32 saved = SaveScratchRegs(except);
 
   // The PC is used by memory checks and in logs.
   MOVI2R(GPR::R3, js.compilerPC);
@@ -194,8 +272,7 @@ void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
     }
   }
 
-  for (const int i : to_save)
-    LD(static_cast<GPR>(i), GPR::SP, ScratchSaveOffset(static_cast<GPR>(i)));
+  RestoreScratchRegs(saved);
 }
 
 bool JitPPC64::HandleFastmemFault(SContext* ctx)
@@ -395,4 +472,117 @@ void JitPPC64::stX(UGeckoInstruction inst)
 
   if (update)
     MR(a, addr);
+}
+
+void JitPPC64::dcbx(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITLoadStoreOff);
+  FALLBACK_IF(m_accurate_cpu_cache_enabled);
+
+  // dcbst, dcbf and dcbi invalidate the JIT's code for the cache line, as a heuristic for games
+  // that don't use icbi. Check the block cache's bit set for the physical line first, as JitArm64
+  // does, so that only lines with code call into the block cache.
+  const auto addr = gpr.GetScopedReg();
+  const auto physical = gpr.GetScopedReg();
+  const auto tmp = gpr.GetScopedReg();
+  if (inst.RA)
+    ADD(addr, gpr.R(inst.RA), gpr.R(inst.RB));
+  else
+    MR(addr, gpr.R(inst.RB));
+  CLRLDI(addr, addr, 32);
+
+  FixupBranch not_mapped;
+  const bool translate = (m_ppc_state.feature_flags & FEATURE_FLAG_MSR_IR) != 0;
+  if (translate)
+  {
+    // physical = (ibat[addr >> 17] & ~0x1ffff) | (addr & 0x1ffff), if the entry is mapped.
+    MOVP2R(tmp, m_mmu.GetIBATTable().data());
+    RLWINM(physical, addr, 32 - PowerPC::BAT_INDEX_SHIFT + 2, PowerPC::BAT_INDEX_SHIFT - 2, 29);
+    LWZX(physical, tmp, physical);
+    ANDI_(tmp, physical, PowerPC::BAT_MAPPED_BIT);
+    not_mapped = BCFar(CCFlags::EQ, CRF::CR0);
+    RLWIMI(physical, addr, 0, 32 - PowerPC::BAT_INDEX_SHIFT, 31);
+  }
+  else
+  {
+    MR(physical, addr);
+  }
+
+  // Bit (physical >> 5) of the bit set, in 32-bit words.
+  MOVP2R(tmp, GetBlockCache()->GetBlockBitSet());
+  {
+    const auto word = gpr.GetScopedReg();
+    RLWINM(word, physical, 32 - 10 + 2, 10 - 2, 29);
+    LWZX(word, tmp, word);
+    RLWINM(physical, physical, 32 - 5, 27, 31);
+    SRW(word, word, physical);
+    ANDI_(word, word, 1);
+  }
+  const FixupBranch has_code = BCFar(CCFlags::NE, CRF::CR0);
+  const u8* done = GetCodePtr();
+
+  SwitchToFarCode();
+  SetJumpTarget(has_code);
+  if (translate)
+    SetJumpTarget(not_mapped);
+  {
+    MR(GPR::R12, addr);
+    const BitSet32 saved = SaveScratchRegs();
+    ABI_CallFunction(&JitInterface::InvalidateICacheLineFromJIT, &m_system.GetJitInterface(),
+                     GPR::R12);
+    RestoreScratchRegs(saved);
+  }
+  B(done);
+  SwitchToNearCode();
+}
+
+void JitPPC64::lmw_stmw(UGeckoInstruction inst)
+{
+  INSTRUCTION_START
+  JITDISABLE(bJITLoadStoreOff);
+  FALLBACK_IF(jo.memcheck);
+
+  // These access up to 32 guest registers, more than fit in host registers at once, so they work on
+  // PowerPCState: lmw flushes the registers it overwrites, and stmw writes back the ones it stores.
+  const bool store = inst.OPCD == 47;
+  const auto addr = gpr.GetScopedReg();
+  if (inst.RA == 0)
+    MOVI2R(addr, static_cast<u32>(static_cast<s32>(inst.SIMM_16)));
+  else
+    ADDI(addr, gpr.R(inst.RA), inst.SIMM_16);
+  CLRLDI(addr, addr, 32);
+  gpr.Flush(store ? FlushMode::MaintainState : FlushMode::All);
+
+  // A misaligned address raises an alignment exception, which the interpreter does. (So does
+  // MSR[LE], which games don't use.)
+  ANDI_(GPR::R0, addr, 3);
+  const FixupBranch misaligned = BCFar(CCFlags::NE, CRF::CR0);
+
+  {
+    const auto value = gpr.GetScopedReg();
+    const auto word_addr = gpr.GetScopedReg();
+    for (u32 i = inst.RD; i <= 31; i++)
+    {
+      ADDI(word_addr, addr, static_cast<s16>(4 * (i - inst.RD)));
+      CLRLDI(word_addr, word_addr, 32);
+      if (store)
+      {
+        LWZ(value, PPC_REG, PPCSTATE_OFF_GPR(i));
+        EmitMemoryAccess({.store = true, .size = 32}, value, word_addr);
+      }
+      else
+      {
+        EmitMemoryAccess({.size = 32}, value, word_addr);
+        STW(value, PPC_REG, PPCSTATE_OFF_GPR(i));
+      }
+    }
+  }
+  const u8* done = GetCodePtr();
+
+  SwitchToFarCode();
+  SetJumpTarget(misaligned);
+  ABI_CallFunction(Interpreter::GetInterpreterOp(inst), &m_system.GetInterpreter(), inst.hex);
+  B(done);
+  SwitchToNearCode();
 }

@@ -65,8 +65,8 @@ constexpr std::array<JitPPC64OpTemplate, 54> s_primary_table{{
     {38, &JitPPC64::stX},  // stb
     {39, &JitPPC64::stX},  // stbu
 
-    {46, &JitPPC64::FallBackToInterpreter},  // lmw
-    {47, &JitPPC64::FallBackToInterpreter},  // stmw
+    {46, &JitPPC64::lmw_stmw},  // lmw
+    {47, &JitPPC64::lmw_stmw},  // stmw
 
     {48, &JitPPC64::lfXX},  // lfs
     {49, &JitPPC64::lfXX},  // lfsu
@@ -199,11 +199,11 @@ constexpr std::array<JitPPC64OpTemplate, 107> s_table31{{
     {824, &JitPPC64::srawix},  // srawix
     {24, &JitPPC64::slwx},     // slwx
 
-    {54, &JitPPC64::FallBackToInterpreter},    // dcbst
-    {86, &JitPPC64::FallBackToInterpreter},    // dcbf
-    {246, &JitPPC64::FallBackToInterpreter},   // dcbtst
-    {278, &JitPPC64::FallBackToInterpreter},   // dcbt
-    {470, &JitPPC64::FallBackToInterpreter},   // dcbi
+    {54, &JitPPC64::dcbx},                     // dcbst
+    {86, &JitPPC64::dcbx},                     // dcbf
+    {246, &JitPPC64::DoNothing},               // dcbtst
+    {278, &JitPPC64::DoNothing},               // dcbt
+    {470, &JitPPC64::dcbx},                    // dcbi
     {758, &JitPPC64::DoNothing},               // dcba
     {1014, &JitPPC64::FallBackToInterpreter},  // dcbz
 
