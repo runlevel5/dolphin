@@ -335,8 +335,30 @@ void PPC64XEmitter::SetJumpTarget(const FixupBranch& branch, const u8* target)
   case FixupBranch::Type::BC:
     EncodeBForm(OP_BC, branch.bo, branch.bi, offset, false, false);
     break;
+  case FixupBranch::Type::BCIsland:
+    if (IsInRange(offset, 16))
+      EncodeBForm(OP_BC, branch.bo, branch.bi, offset, false, false);
+    else
+      m_islands.emplace_back(branch, target);
+    break;
   }
   SetCodePtrUnsafe(code, code_end, write_failed);
+}
+
+FixupBranch PPC64XEmitter::BCIsland(CCFlags cond, CRF field)
+{
+  return WriteFixupBranch(FixupBranch::Type::BCIsland, BranchBO(cond), CRBit(field, cond));
+}
+
+void PPC64XEmitter::EmitIslands()
+{
+  for (auto [branch, target] : m_islands)
+  {
+    branch.type = FixupBranch::Type::BC;
+    SetJumpTarget(branch);
+    B(target);
+  }
+  m_islands.clear();
 }
 
 FixupBranch PPC64XEmitter::B()
@@ -1518,6 +1540,11 @@ void PPC64XEmitter::XXSLDWI(VSR xt, VSR xa, VSR xb, u32 shw)
   EncodeXX3Form(DecodeReg(xt), DecodeReg(xa), DecodeReg(xb), (shw << 5) | 2);
 }
 
+void PPC64XEmitter::XXMRGHW(VSR xt, VSR xa, VSR xb)
+{
+  EncodeXX3Form(DecodeReg(xt), DecodeReg(xa), DecodeReg(xb), 18);
+}
+
 void PPC64XEmitter::XXSPLTW(VSR xt, VSR xb, u32 uim)
 {
   ASSERT(uim < 4);
@@ -1727,6 +1754,21 @@ XX2_OP(XVCVSPDP, 457)
 XX2_OP(XVCVSXDDP, 504)
 XX2_OP(XVCVDPSXWS, 216)
 
+XX3_OP(XVADDSP, 64)
+XX3_OP(XVSUBSP, 72)
+XX3_OP(XVMULSP, 80)
+XX3_OP(XVDIVSP, 88)
+XX3_OP(XVMADDASP, 65)
+XX3_OP(XVMSUBASP, 81)
+XX3_OP(XVNMADDASP, 193)
+XX3_OP(XVNMSUBASP, 209)
+XX3_OP(XVCMPEQSP, 67)
+XX3_OP(XVCMPGESP, 83)
+
+XX2_OP(XVABSSP, 409)
+XX2_OP(XVNABSSP, 425)
+XX2_OP(XVNEGSP, 441)
+
 #undef XX3_OP
 #undef XX2_OP
 
@@ -1759,6 +1801,36 @@ void PPC64XEmitter::VMINSW(VSR vrt, VSR vra, VSR vrb)
 {
   Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
           898);
+}
+
+void PPC64XEmitter::VSPLTISW(VSR vrt, s32 simm)
+{
+  ASSERT(simm >= -16 && simm < 16);
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | ((static_cast<u32>(simm) & 0x1F) << 16) | 908);
+}
+
+void PPC64XEmitter::VADDUWM(VSR vrt, VSR vra, VSR vrb)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
+          128);
+}
+
+void PPC64XEmitter::VSLW(VSR vrt, VSR vra, VSR vrb)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
+          388);
+}
+
+void PPC64XEmitter::VCMPGTUW(VSR vrt, VSR vra, VSR vrb, bool rc)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
+          (u32{rc} << 10) | 646);
+}
+
+void PPC64XEmitter::VMRGEW(VSR vrt, VSR vra, VSR vrb)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
+          1932);
 }
 
 void PPC64XEmitter::MTVSCR(VR vrb)

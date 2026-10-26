@@ -8,6 +8,8 @@
 
 #include <cstring>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "Common/Assert.h"
 #include "Common/CodeBlock.h"
@@ -288,6 +290,9 @@ struct FixupBranch
     BL,
     // B-form: +/- 32 KiB
     BC,
+    // B-form, for a target that may be out of its range: then it branches to an island, a branch
+    // to the target that EmitIslands emits.
+    BCIsland,
   };
 
   u8* ptr;
@@ -342,6 +347,9 @@ private:
   // Whether MOVI2R may use Power ISA 3.1's prefixed instructions.
   bool m_prefixed_instructions = false;
 
+  // BCIsland branches whose targets are out of their range, with the targets.
+  std::vector<std::pair<FixupBranch, const u8*>> m_islands;
+
 protected:
   void Write32(u32 value);
   // Writes a prefixed (Power ISA 3.1) instruction, which mustn't cross a 64-byte boundary.
@@ -393,6 +401,13 @@ public:
   [[nodiscard]] FixupBranch BL();
   [[nodiscard]] FixupBranch BC(CCFlags cond, CRF field = CRF::CR0);
   [[nodiscard]] FixupBranch BDNZ();
+  // A conditional branch whose target may be out of its range, which then goes through an island:
+  // EmitIslands emits the islands of the branches whose targets were set, at a place they reach,
+  // where the code doesn't run into them. OldestIsland is the first of those branches, or null.
+  [[nodiscard]] FixupBranch BCIsland(CCFlags cond, CRF field);
+  void EmitIslands();
+  const u8* OldestIsland() const { return m_islands.empty() ? nullptr : m_islands[0].first.ptr; }
+  void DiscardIslands() { m_islands.clear(); }
 
   // Branches to a known target.
   void B(const void* target);
@@ -678,6 +693,8 @@ public:
   void XXSWAPD(VSR xt, VSR xa) { XXPERMDI(xt, xa, xa, 2); }
   void XXMRGHD(VSR xt, VSR xa, VSR xb) { XXPERMDI(xt, xa, xb, 0); }
   void XXMRGLD(VSR xt, VSR xa, VSR xb) { XXPERMDI(xt, xa, xb, 3); }
+  // Words 0 of xa and xb, then words 1: xa.w0, xb.w0, xa.w1, xb.w1.
+  void XXMRGHW(VSR xt, VSR xa, VSR xb);
   void XXSLDWI(VSR xt, VSR xa, VSR xb, u32 shw);
   void XXSPLTW(VSR xt, VSR xb, u32 uim);
   // xt = (xc & xb) | (~xc & xa)
@@ -798,6 +815,21 @@ public:
   void XVCVSXDDP(VSR xt, VSR xb);
   void XVCVDPSXWS(VSR xt, VSR xb);
 
+  // VSX vector floating-point, on all four words
+  void XVADDSP(VSR xt, VSR xa, VSR xb);
+  void XVSUBSP(VSR xt, VSR xa, VSR xb);
+  void XVMULSP(VSR xt, VSR xa, VSR xb);
+  void XVDIVSP(VSR xt, VSR xa, VSR xb);
+  void XVMADDASP(VSR xt, VSR xa, VSR xb);
+  void XVMSUBASP(VSR xt, VSR xa, VSR xb);
+  void XVNMADDASP(VSR xt, VSR xa, VSR xb);
+  void XVNMSUBASP(VSR xt, VSR xa, VSR xb);
+  void XVCMPEQSP(VSR xt, VSR xa, VSR xb);
+  void XVCMPGESP(VSR xt, VSR xa, VSR xb);
+  void XVABSSP(VSR xt, VSR xb);
+  void XVNABSSP(VSR xt, VSR xb);
+  void XVNEGSP(VSR xt, VSR xb);
+
   // VMX doubleword shift left (by the low 6 bits of each doubleword of vrb) and compare equal, on
   // VRs given as VS32-VS63. With rc, CR6 gets LT if all doublewords are equal, EQ if none are.
   void VSLD(VSR vrt, VSR vra, VSR vrb);
@@ -805,6 +837,14 @@ public:
   // VMX signed word maximum and minimum.
   void VMAXSW(VSR vrt, VSR vra, VSR vrb);
   void VMINSW(VSR vrt, VSR vra, VSR vrb);
+  // VMX word operations: splat a 5-bit signed immediate, add modulo, shift left (by the low 5 bits
+  // of each word of vrb), compare unsigned greater than (with rc, CR6 as VCMPEQUD sets it), and
+  // merge the even words (vra.w0, vrb.w0, vra.w2, vrb.w2).
+  void VSPLTISW(VSR vrt, s32 simm);
+  void VADDUWM(VSR vrt, VSR vra, VSR vrb);
+  void VSLW(VSR vrt, VSR vra, VSR vrb);
+  void VCMPGTUW(VSR vrt, VSR vra, VSR vrb, bool rc = false);
+  void VMRGEW(VSR vrt, VSR vra, VSR vrb);
 
   // Vector status and control register
   void MFVSCR(VR vrt);

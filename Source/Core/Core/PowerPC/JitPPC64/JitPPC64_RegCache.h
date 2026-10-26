@@ -122,6 +122,11 @@ private:
 //
 // A host register holds both halves of a guest register, as a PowerPCState::ps entry does:
 // doubleword 0, which scalar VSX instructions work on, holds ps0, and doubleword 1 holds ps1.
+// Paired single instructions and quantized loads can also hold guest registers as singles, which
+// the vector single precision instructions work on: ps0 in words 0 and 1, and ps1 in words 2 and 3,
+// as xvcvdpsp leaves them. Each half is a single then, which stands for the double that it
+// converts to exactly, and is converted to doubles for PowerPCState and for the instructions that
+// want doubles.
 // Guest registers live in V20-V31 (VS52-VS63), whose 128 bits are all non-volatile.
 class PPC64FPRCache
 {
@@ -159,11 +164,30 @@ public:
   void Start();
   void NextInstruction() { m_instruction++; }
 
-  // Returns a host register holding guest register preg.
+  // Returns a host register holding guest register preg as doubles. Singles are converted, in
+  // the host register.
   PPC64Gen::VSR R(u32 preg);
-  // Returns a host register for writing guest register preg. If load, it holds the current value
-  // first, for instructions that write only one half, or also read it.
+  // As R, for instructions that only compute with the value: singles are converted into tmp
+  // instead, which quiets signaling NaNs, as computing with them does anyway.
+  PPC64Gen::VSR RForArith(u32 preg, ScopedReg& tmp);
+  // Returns a host register for writing guest register preg as doubles. If load, it holds the
+  // current value first, for instructions that write only one half, or also read it.
   PPC64Gen::VSR RW(u32 preg, bool load = false);
+
+  // Whether guest register preg is in a host register as singles; RSingle returns it then.
+  bool HoldsSingles(u32 preg) const { return m_guest[preg].bound && m_guest[preg].single; }
+  PPC64Gen::VSR RSingle(u32 preg);
+  // Whether the singles of guest register preg can't be signaling NaNs, as for the results of
+  // arithmetic: xvcvspdp converts those exactly.
+  bool IsQuiet(u32 preg) const { return m_guest[preg].quiet; }
+  // Returns a host register for writing guest register preg, which the instruction then writes as
+  // singles with MarkSingles. Until then, the host register holds what it held before, as it did,
+  // so that far code can still store guest register preg if the instruction reads it.
+  PPC64Gen::VSR BindForSingles(u32 preg);
+  void MarkSingles(u32 preg, bool quiet);
+  // Guest register preg, which was held as doubles, has been converted to singles in its host
+  // register, having been checked to be singles, which aren't signaling NaNs.
+  void KeepAsSingles(u32 preg);
 
   void Flush(FlushMode mode);
   // Writes guest register preg back if it was written, keeping it in its host register.
@@ -172,8 +196,10 @@ public:
   // PowerPCState.
   void Discard(u32 preg);
   // For far code, which mustn't change the cache's state: write guest register preg to
-  // PowerPCState, or load it again from there, if it's in a host register.
+  // PowerPCState, or load it again from there, if it's in a host register. single says whether
+  // the host register holds it as singles, for an instruction that changed that.
   void EmitStoreValue(u32 preg);
+  void EmitStoreValue(u32 preg, bool single);
   void EmitLoadValue(u32 preg);
 
   // Scratch registers, from the volatile registers V0-V15 (VS32-VS47).
@@ -185,6 +211,9 @@ private:
   {
     bool bound = false;
     bool dirty = false;
+    // Held as singles, and if so, whether they can't be signaling NaNs.
+    bool single = false;
+    bool quiet = false;
     PPC64Gen::VSR host = PPC64Gen::VSR::VS0;
     u32 last_used = 0;
   };
@@ -193,7 +222,7 @@ private:
   PPC64Gen::VSR AllocateGuestHostReg();
   void Release(u32 preg);
   void Load(PPC64Gen::VSR host, u32 preg);
-  void Store(PPC64Gen::VSR host, u32 preg);
+  void Store(PPC64Gen::VSR host, u32 preg, bool single, bool quiet);
   void UnlockReg(PPC64Gen::VSR reg);
 
   JitPPC64* m_jit = nullptr;

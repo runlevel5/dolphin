@@ -8,7 +8,9 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
+#include <vector>
 
 #include "Common/PPC64Emitter.h"
 #include "Common/RangeSizeSet.h"
@@ -101,6 +103,14 @@ public:
   std::size_t DisassembleFarCode(const JitBlock& block, std::ostream& stream) const override;
 
   const char* GetName() const override { return "JITPPC64"; }
+
+  // For the FPR cache: converts both halves between singles (in words 0 and 2, copied into words 1
+  // and 3) and the doubles they stand for, as ConvertToDouble does. quiet says that the singles
+  // can't be signaling NaNs, which xvcvspdp would quiet; otherwise, this uses VS2 and VS3. Doubles
+  // are converted to singles only when they can't be signaling NaNs, which xvcvdpsp would quiet
+  // too, and xscvdpspn, which doesn't, flushes denormals.
+  void ConvertSinglesToDoubles(PPC64Gen::VSR out, PPC64Gen::VSR in, bool quiet);
+  void ConvertDoublesToSingles(PPC64Gen::VSR out, PPC64Gen::VSR in);
 
   // OPCODES
   using Instruction = void (JitPPC64::*)(UGeckoInstruction);
@@ -292,9 +302,13 @@ protected:
   // Slow paths go in far code, out of the way of the code that runs.
   void SwitchToFarCode();
   void SwitchToNearCode();
-  // Conditional branches only reach +/- 32 KiB, so a branch to far code skips over an
-  // unconditional one if the condition is false. Returns the unconditional branch.
+  // Conditional branches only reach +/- 32 KiB, so a branch to far code goes through an island,
+  // an unconditional branch to it, after the block's exit (see BCIsland), and isn't taken on the
+  // fast path.
   [[nodiscard]] PPC64Gen::FixupBranch BCFar(PPC64Gen::CCFlags cond, PPC64Gen::CRF field);
+  // Islands go in the middle of a long block when the first branch to them is this far back,
+  // which leaves room for an instruction's code and the islands.
+  static constexpr s64 ISLAND_DISTANCE = 16 * 1024;
 
   void FlushRegisters(FlushMode mode);
 
@@ -309,11 +323,11 @@ protected:
   void ForceDouble(PPC64Gen::VSR reg);
   // Rounds a double-precision result in reg to single precision, as ForceSingle.
   void ForceSingle(PPC64Gen::VSR reg);
-  // ForceSingle for both halves.
-  void ForcePairedSingle(PPC64Gen::VSR reg);
   // From far code, calls the interpreter for a floating-point instruction, with its operands and
-  // FD in PowerPCState and FD reloaded after, then branches to done.
+  // FD in PowerPCState and FD reloaded after, then branches to done. For an instruction that
+  // changed whether FD is held as singles, fd_was_single says whether it was before.
   void InterpretFromFarCode(UGeckoInstruction inst, const u8* done);
+  void InterpretFromFarCode(UGeckoInstruction inst, const u8* done, bool fd_was_single);
   // Rounds the mantissa of a multiplicand to 25 bits, as Force25Bit.
   void Force25Bit(PPC64Gen::VSR out, PPC64Gen::VSR in);
   // Whether the FPR holds singles, which a multiplicand needn't be rounded from.
@@ -328,6 +342,8 @@ protected:
   // Converts the double in the low 64 bits of value to single precision, as ConvertToSingleFTZ.
   void ConvertDoubleToSingleFTZ(PPC64Gen::GPR value);
   void ConvertDoubleToSingleFTZ(PPC64Gen::GPR value, PPC64Gen::GPR exp, PPC64Gen::GPR high);
+  // For psq_st of floats held as singles, as ConvertToSingleFTZ: flushes denormals to zero.
+  void FlushDenormalSingles(PPC64Gen::VSR out, PPC64Gen::VSR in);
   // Quantizes doubleword 0 of in into out for psq_st, as ScaleAndClamp.
   void QuantizeHalf(PPC64Gen::GPR out, PPC64Gen::VSR in, u32 type_size, bool is_signed,
                     s32 exponent);
@@ -345,10 +361,32 @@ protected:
   // b and c, rounded to single precision if single, as the interpreter does.
   void EmitFloatArith(u32 op5, bool single, bool round_c, PPC64Gen::VSR result, PPC64Gen::VSR a,
                       PPC64Gen::VSR b, PPC64Gen::VSR c);
-  // Paired-single arithmetic on both halves at once, as EmitFloatArith on each. c_half is the half
-  // of C for both halves of ps_muls0 and ps_madds0 (0) or ps_muls1 and ps_madds1 (1), or -1.
-  void EmitPairedArith(UGeckoInstruction inst, u32 op5, int c_half, PPC64Gen::VSR d,
-                       PPC64Gen::VSR a, PPC64Gen::VSR b, PPC64Gen::VSR c);
+  // Paired-single arithmetic on singles (see JitPPC64_Paired.cpp). An operand is guest register
+  // preg, in host, held as singles if single, with the singles to compute with in reg, converted
+  // into singles if it's held as doubles.
+  struct PairedOperand
+  {
+    u32 preg = 0;
+    PPC64Gen::VSR host = PPC64Gen::VSR::VS0;
+    bool single = false;
+    PPC64FPRCache::ScopedReg singles;
+    PPC64Gen::VSR reg = PPC64Gen::VSR::VS0;
+  };
+  void BindPairedOperand(PairedOperand& operand, u32 preg);
+  bool IsReadAgainAsSingles(u32 preg) const;
+  // Gets the operands' singles, after they and FD are bound. Branches to not_singles, for far code
+  // that the caller emits, are taken if operands held as doubles aren't singles.
+  void GetPairedSingles(UGeckoInstruction inst, std::span<PairedOperand> operands,
+                        std::vector<PPC64Gen::FixupBranch>& not_singles);
+  // From far code: interprets the instruction, and leaves the block for the next one.
+  void InterpretAndExit(UGeckoInstruction inst);
+  // BranchIfTinySingles returns a branch to far code, taken if a half of a result may be computed
+  // differently by the interpreter, where EmitTinySinglesFallback branches back to resume if it
+  // isn't, or returns a branch to the interpreter. SetFPRFFromSingles sets FPRF from ps0.
+  [[nodiscard]] PPC64Gen::FixupBranch BranchIfTinySingles(PPC64Gen::VSR singles);
+  [[nodiscard]] PPC64Gen::FixupBranch EmitTinySinglesFallback(PPC64Gen::FixupBranch tiny, bool fma,
+                                                              const u8* resume);
+  void SetFPRFFromSingles(PPC64Gen::VSR singles);
 
   void HLEFunction(u32 hook_index);
   bool HandleFunctionHooking(u32 address);

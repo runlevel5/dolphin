@@ -200,8 +200,14 @@ void PPC64FPRCache::Load(VSR host, u32 preg)
   m_jit->LXVD2X(host, PPC_REG, GPR::R0);
 }
 
-void PPC64FPRCache::Store(VSR host, u32 preg)
+void PPC64FPRCache::Store(VSR host, u32 preg, bool single, bool quiet)
 {
+  if (single)
+  {
+    // Converted in VS1, which isn't allocated: loads leave their value in VS0 while they bind FD.
+    m_jit->ConvertSinglesToDoubles(VSR::VS1, host, quiet);
+    host = VSR::VS1;
+  }
   m_jit->LI(GPR::R0, PPCSTATE_OFF_PS(preg));
   m_jit->STXVD2X(host, PPC_REG, GPR::R0);
 }
@@ -246,6 +252,8 @@ VSR PPC64FPRCache::Bind(u32 preg, bool load)
   m_host_in_use |= u64{1} << DecodeReg(host);
   guest.bound = true;
   guest.dirty = false;
+  guest.single = false;
+  guest.quiet = false;
   guest.host = host;
   if (load)
     Load(host, preg);
@@ -254,21 +262,70 @@ VSR PPC64FPRCache::Bind(u32 preg, bool load)
 
 VSR PPC64FPRCache::R(u32 preg)
 {
-  return Bind(preg, true);
+  const VSR host = Bind(preg, true);
+  GuestReg& guest = m_guest[preg];
+  if (guest.single)
+  {
+    m_jit->ConvertSinglesToDoubles(host, host, guest.quiet);
+    guest.single = false;
+  }
+  return host;
+}
+
+VSR PPC64FPRCache::RForArith(u32 preg, ScopedReg& tmp)
+{
+  const VSR host = Bind(preg, true);
+  if (!m_guest[preg].single)
+    return host;
+  tmp = GetScopedReg();
+  m_jit->XVCVSPDP(tmp, host);
+  return tmp;
 }
 
 VSR PPC64FPRCache::RW(u32 preg, bool load)
 {
-  const VSR host = Bind(preg, load);
-  m_guest[preg].dirty = true;
+  const VSR host = load ? R(preg) : Bind(preg, false);
+  GuestReg& guest = m_guest[preg];
+  guest.dirty = true;
+  guest.single = false;
   return host;
+}
+
+VSR PPC64FPRCache::RSingle(u32 preg)
+{
+  ASSERT(HoldsSingles(preg));
+  m_guest[preg].last_used = m_instruction;
+  return m_guest[preg].host;
+}
+
+VSR PPC64FPRCache::BindForSingles(u32 preg)
+{
+  // Not loaded: an instruction that reads preg has done so already.
+  return Bind(preg, false);
+}
+
+void PPC64FPRCache::MarkSingles(u32 preg, bool quiet)
+{
+  GuestReg& guest = m_guest[preg];
+  ASSERT(guest.bound);
+  guest.dirty = true;
+  guest.single = true;
+  guest.quiet = quiet;
+}
+
+void PPC64FPRCache::KeepAsSingles(u32 preg)
+{
+  GuestReg& guest = m_guest[preg];
+  ASSERT(guest.bound && !guest.single);
+  guest.single = true;
+  guest.quiet = true;
 }
 
 void PPC64FPRCache::Release(u32 preg)
 {
   GuestReg& guest = m_guest[preg];
   if (guest.dirty)
-    Store(guest.host, preg);
+    Store(guest.host, preg, guest.single, guest.quiet);
   m_host_in_use &= ~(u64{1} << DecodeReg(guest.host));
   guest = {};
 }
@@ -278,20 +335,36 @@ void PPC64FPRCache::StoreIfDirty(u32 preg)
   GuestReg& guest = m_guest[preg];
   if (!guest.bound || !guest.dirty)
     return;
-  Store(guest.host, preg);
+  Store(guest.host, preg, guest.single, guest.quiet);
   guest.dirty = false;
 }
 
 void PPC64FPRCache::EmitStoreValue(u32 preg)
 {
-  if (m_guest[preg].bound)
-    Store(m_guest[preg].host, preg);
+  const GuestReg& guest = m_guest[preg];
+  if (guest.bound)
+    Store(guest.host, preg, guest.single, guest.quiet);
+}
+
+void PPC64FPRCache::EmitStoreValue(u32 preg, bool single)
+{
+  // Whether singles from before the instruction were quiet isn't known.
+  const GuestReg& guest = m_guest[preg];
+  if (guest.bound)
+    Store(guest.host, preg, single, false);
 }
 
 void PPC64FPRCache::EmitLoadValue(u32 preg)
 {
-  if (m_guest[preg].bound)
-    Load(m_guest[preg].host, preg);
+  const GuestReg& guest = m_guest[preg];
+  if (!guest.bound)
+    return;
+  Load(guest.host, preg);
+  if (guest.single)
+  {
+    ASSERT(guest.quiet);
+    m_jit->ConvertDoublesToSingles(guest.host, guest.host);
+  }
 }
 
 void PPC64FPRCache::Discard(u32 preg)
@@ -314,7 +387,7 @@ void PPC64FPRCache::Flush(FlushMode mode)
     if (mode == FlushMode::All)
       Release(preg);
     else if (guest.dirty)
-      Store(guest.host, preg);
+      Store(guest.host, preg, guest.single, guest.quiet);
   }
 }
 

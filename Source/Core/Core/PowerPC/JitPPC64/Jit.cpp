@@ -338,10 +338,7 @@ void JitPPC64::SwitchToFarCode()
 
 FixupBranch JitPPC64::BCFar(CCFlags cond, CRF field)
 {
-  const FixupBranch skip = BC(Invert(cond), field);
-  const FixupBranch far = B();
-  SetJumpTarget(skip);
-  return far;
+  return BCIsland(cond, field);
 }
 
 void JitPPC64::FlushRegisters(FlushMode mode)
@@ -887,6 +884,8 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   js.skipInstructions = 0;
   js.curBlock = b;
   m_next_cr7_field.reset();
+  // From a block that failed to compile.
+  DiscardIslands();
   js.numLoadStoreInst = 0;
   js.numFloatingPointInst = 0;
 
@@ -938,6 +937,15 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   for (u32 i = 0; i < code_block.m_num_instructions; i++)
   {
     PPCAnalyst::CodeOp& op = m_code_buffer[i];
+
+    // The islands of the branches to far code go after the block's exit, or, in a long block,
+    // before the first of those branches would be out of their reach, branched over.
+    if (const u8* oldest = OldestIsland(); oldest && GetCodePtr() - oldest > ISLAND_DISTANCE)
+    {
+      const FixupBranch skip = B();
+      EmitIslands();
+      SetJumpTarget(skip);
+    }
 
     js.compilerPC = op.address;
     js.op = &op;
@@ -1018,6 +1026,7 @@ bool JitPPC64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
     FlushRegisters(FlushMode::All);
     WriteExit(nextPC);
   }
+  EmitIslands();
 
   if (HasWriteFailed() || m_other_code_write_failed)
   {

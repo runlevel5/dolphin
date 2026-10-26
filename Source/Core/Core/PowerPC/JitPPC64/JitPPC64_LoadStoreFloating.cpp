@@ -189,10 +189,16 @@ void JitPPC64::stfXX(UGeckoInstruction inst)
   const auto addr = gpr.GetScopedReg();
   const auto value = gpr.GetScopedReg();
   ComputeAddress(addr, inst, indexed);
-  const VSR s = fpr.R(inst.FS);
+  const bool singles = fpr.HoldsSingles(inst.FS);
+  const VSR s = singles ? fpr.RSingle(inst.FS) : fpr.R(inst.FS);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
 
-  if (single)
+  if (single && singles)
+  {
+    // ps0 as a single is in word 1 too, which stores of 32 bits store.
+    EmitStoreFromVSR(32, s, value, addr);
+  }
+  else if (single)
   {
     MFVSRD(value, s);
     ConvertDoubleToSingle(value);
@@ -200,8 +206,15 @@ void JitPPC64::stfXX(UGeckoInstruction inst)
   }
   else
   {
-    // stfd, or stfiwx, which stores the low word.
-    EmitStoreFromVSR(integer ? 32 : 64, s, value, addr);
+    // stfd, or stfiwx, which stores the low word, of ps0 as a double. A single is converted,
+    // exactly, in VS1, which isn't allocated: the store mustn't hold scratch registers.
+    VSR ps0 = s;
+    if (singles)
+    {
+      XSCVSPDPN(VSR::VS1, s);
+      ps0 = VSR::VS1;
+    }
+    EmitStoreFromVSR(integer ? 32 : 64, ps0, value, addr);
   }
 
   if (update)

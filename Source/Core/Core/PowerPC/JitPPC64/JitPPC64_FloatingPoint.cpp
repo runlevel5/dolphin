@@ -91,48 +91,45 @@ void JitPPC64::ForceSingle(VSR reg)
   SwitchToNearCode();
 }
 
-void JitPPC64::ForcePairedSingle(VSR reg)
+void JitPPC64::ConvertSinglesToDoubles(VSR out, VSR in, bool quiet)
 {
-  // xvcvdpsp and xvcvspdp round both halves as xsrsp rounds one, in each rounding mode and for
-  // NaNs, infinities and denormals alike.
-  EnsureNILoaded();
-  const FixupBranch ni = BCFar(CCFlags::NE, CRF::CR4);
-  const u8* round = GetCodePtr();
-  XVCVDPSP(reg, reg);
-  XVCVSPDP(reg, reg);
-
-  // With NI, as ForceSingle: halves below the smallest normal single become zeroes of their sign.
-  SwitchToFarCode();
-  SetJumpTarget(ni);
+  if (quiet)
   {
-    const auto smallest_normal = fpr.GetScopedReg();
-    const auto small = fpr.GetScopedReg();
-    const auto zero = fpr.GetScopedReg();
-    const auto bits = gpr.GetScopedReg();
-    LIS(bits, 0x3810);
-    SLDI(bits, bits, 32);
-    MTVSRD(smallest_normal, bits);
-    XXPERMDI(smallest_normal, smallest_normal, smallest_normal, 0);
-    // All ones for the halves whose magnitude is smaller, which a NaN's isn't.
-    XVABSDP(small, reg);
-    XVCMPGTDP(small, smallest_normal, small);
-    // Zeroes with the halves' signs: -0.0 masks the sign bits.
-    XXLXOR(zero, zero, zero);
-    XVNEGDP(zero, zero);
-    XXLAND(zero, zero, reg);
-    XXSEL(reg, reg, zero, small);
+    XVCVSPDP(out, in);
+    return;
   }
-  B(round);
-  SwitchToNearCode();
+  // xscvspdpn converts word 0 without quieting.
+  XSCVSPDPN(VSR::VS2, in);
+  XXSLDWI(VSR::VS3, in, in, 2);
+  XSCVSPDPN(VSR::VS3, VSR::VS3);
+  XXPERMDI(out, VSR::VS2, VSR::VS3, 0);
+}
+
+void JitPPC64::ConvertDoublesToSingles(VSR out, VSR in)
+{
+  // POWER9 and Power10 copy words 0 and 2 into words 1 and 3, which Power ISA 2.07 leaves
+  // undefined.
+  XVCVDPSP(out, in);
+  if (!m_isa_3_0)
+    VMRGEW(out, out, out);
 }
 
 void JitPPC64::InterpretFromFarCode(UGeckoInstruction inst, const u8* done)
 {
+  InterpretFromFarCode(inst, done, fpr.HoldsSingles(inst.FD));
+}
+
+void JitPPC64::InterpretFromFarCode(UGeckoInstruction inst, const u8* done, bool fd_was_single)
+{
   // The interpreter may set FPSCR's flags, and leave FD as it was. Storing all of FA, FB, FC and
   // FD stores whatever registers those fields name, which is harmless for fields an instruction
-  // doesn't use.
-  for (const u32 reg : {u32(inst.FA), u32(inst.FB), u32(inst.FC), u32(inst.FD)})
-    fpr.EmitStoreValue(reg);
+  // doesn't use, and for an FD that it only writes, which may hold anything if it was just bound.
+  for (const u32 reg : {u32(inst.FA), u32(inst.FB), u32(inst.FC)})
+  {
+    if (reg != inst.FD)
+      fpr.EmitStoreValue(reg);
+  }
+  fpr.EmitStoreValue(inst.FD, fd_was_single);
   {
     const BitSet32 saved = SaveScratchRegs();
     ABI_CallFunction(Interpreter::GetInterpreterOp(inst), &m_system.GetInterpreter(), inst.hex);
@@ -374,11 +371,12 @@ void JitPPC64::fp_arith(UGeckoInstruction inst)
   const bool single = inst.OPCD == 59;
   const bool use_c = op5 >= 25;  // fmul and the fused multiply-adds
   const bool use_b = op5 != 25;  // fmul doesn't use B
-  const bool round_c = single && use_c && !IsSingle(inst.FC);
+  const bool round_c = single && use_c && !fpr.HoldsSingles(inst.FC) && !IsSingle(inst.FC);
 
-  const VSR a = fpr.R(inst.FA);
-  const VSR b = use_b ? fpr.R(inst.FB) : VSR::VS0;
-  const VSR c = use_c ? fpr.R(inst.FC) : VSR::VS0;
+  PPC64FPRCache::ScopedReg a_doubles, b_doubles, c_doubles;
+  const VSR a = fpr.RForArith(inst.FA, a_doubles);
+  const VSR b = use_b ? fpr.RForArith(inst.FB, b_doubles) : VSR::VS0;
+  const VSR c = use_c ? fpr.RForArith(inst.FC, c_doubles) : VSR::VS0;
   // Double precision instructions only write ps0.
   const VSR d = fpr.RW(inst.FD, !single);
 
@@ -398,9 +396,57 @@ void JitPPC64::fp_logic(UGeckoInstruction inst)
   JITDISABLE(bJITFloatingPointOff);
   INTERPRET_IF(inst.Rc);
 
-  // These only change the sign bit, of ps0, or of both halves for the paired single forms.
+  // These only change the sign bit, of ps0, or of both halves for the paired single forms, which
+  // keep singles as singles. The others do too, if FD holds singles.
   const bool paired = inst.OPCD == 4;
-  const VSR b = fpr.R(inst.FB);
+  if (fpr.HoldsSingles(inst.FB) && (paired || fpr.HoldsSingles(inst.FD)))
+  {
+    const VSR b = fpr.RSingle(inst.FB);
+    const bool quiet = fpr.IsQuiet(inst.FB) && (paired || fpr.IsQuiet(inst.FD));
+    const VSR d = fpr.BindForSingles(inst.FD);
+    // The scalar forms merge ps0 into FD.
+    PPC64FPRCache::ScopedReg half0;
+    if (!paired)
+      half0 = fpr.GetScopedReg();
+    const VSR result = paired ? d : VSR(half0);
+    switch (inst.SUBOP10)
+    {
+    case 40:  // fneg, ps_neg
+      XVNEGSP(result, b);
+      break;
+    case 72:  // fmr, ps_mr
+      if (result != b)
+        XXLMR(result, b);
+      break;
+    case 136:  // fnabs, ps_nabs
+      XVNABSSP(result, b);
+      break;
+    case 264:  // fabs, ps_abs
+      XVABSSP(result, b);
+      break;
+    default:
+      ASSERT_MSG(DYNA_REC, false, "Unexpected instruction {:#010x}", inst.hex);
+      break;
+    }
+    if (!paired)
+      XXPERMDI(d, result, d, 1);
+    fpr.MarkSingles(inst.FD, quiet);
+    return;
+  }
+
+  // Otherwise, as doubles: ps0 of a single is converted, exactly, into a scratch register.
+  PPC64FPRCache::ScopedReg b_ps0;
+  VSR b;
+  if (!paired && fpr.HoldsSingles(inst.FB))
+  {
+    b_ps0 = fpr.GetScopedReg();
+    XSCVSPDPN(b_ps0, fpr.RSingle(inst.FB));
+    b = b_ps0;
+  }
+  else
+  {
+    b = fpr.R(inst.FB);
+  }
   const VSR d = fpr.RW(inst.FD, !paired);
 
   if (paired)
@@ -476,7 +522,8 @@ void JitPPC64::frspx(UGeckoInstruction inst)
   INTERPRET_IF(inst.Rc);
   FALLBACK_IF(jo.fp_exceptions);
 
-  const VSR b = fpr.R(inst.FB);
+  PPC64FPRCache::ScopedReg b_doubles;
+  const VSR b = fpr.RForArith(inst.FB, b_doubles);
   const VSR d = fpr.RW(inst.FD);
 
   const auto result = fpr.GetScopedReg();
@@ -495,7 +542,8 @@ void JitPPC64::fctiwx(UGeckoInstruction inst)
   FALLBACK_IF(jo.fp_exceptions);
 
   const bool round_toward_zero = inst.SUBOP10 == 15;
-  const VSR b = fpr.R(inst.FB);
+  PPC64FPRCache::ScopedReg b_doubles;
+  const VSR b = fpr.RForArith(inst.FB, b_doubles);
   const VSR d = fpr.RW(inst.FD, true);
 
   // The host's fctiw and fctiwz round and saturate as the guest's do, with 0x80000000 for NaNs,
@@ -535,8 +583,9 @@ void JitPPC64::fcmpX(UGeckoInstruction inst)
   JITDISABLE(bJITFloatingPointOff);
   FALLBACK_IF(jo.fp_exceptions);
 
-  const VSR a = fpr.R(inst.FA);
-  const VSR b = fpr.R(inst.FB);
+  PPC64FPRCache::ScopedReg a_doubles, b_doubles;
+  const VSR a = fpr.RForArith(inst.FA, a_doubles);
+  const VSR b = fpr.RForArith(inst.FB, b_doubles);
 
   XSCMPUDP(CRF::CR1, a, b);
   // With FPRF, fcmpu and fcmpo set FPSCR[FPCC].
@@ -551,30 +600,24 @@ void JitPPC64::ps_mergeXX(UGeckoInstruction inst)
   JITDISABLE(bJITPairedOff);
   INTERPRET_IF(inst.Rc);
 
+  // ps_merge00: a.ps0, b.ps0; 01: a.ps0, b.ps1; 10: a.ps1, b.ps0; 11: a.ps1, b.ps1. xxpermdi
+  // picks the doubleword of A with bit 1 of its DM field, and of B with bit 0, which holds a half
+  // as a double, or as a single twice.
+  const u32 dm = (inst.SUBOP10 - 528) / 32;
+  ASSERT_MSG(DYNA_REC, dm < 4, "Unexpected instruction {:#010x}", inst.hex);
+  if (fpr.HoldsSingles(inst.FA) && fpr.HoldsSingles(inst.FB))
+  {
+    const VSR a = fpr.RSingle(inst.FA);
+    const VSR b = fpr.RSingle(inst.FB);
+    const bool quiet = fpr.IsQuiet(inst.FA) && fpr.IsQuiet(inst.FB);
+    XXPERMDI(fpr.BindForSingles(inst.FD), a, b, dm);
+    fpr.MarkSingles(inst.FD, quiet);
+    return;
+  }
+
   const VSR a = fpr.R(inst.FA);
   const VSR b = fpr.R(inst.FB);
-  const VSR d = fpr.RW(inst.FD);
-
-  // ps_merge00: a.ps0, b.ps0; 01: a.ps0, b.ps1; 10: a.ps1, b.ps0; 11: a.ps1, b.ps1. xxpermdi
-  // picks the doubleword of A with bit 1 of its DM field, and of B with bit 0.
-  switch (inst.SUBOP10)
-  {
-  case 528:
-    XXPERMDI(d, a, b, 0);
-    break;
-  case 560:
-    XXPERMDI(d, a, b, 1);
-    break;
-  case 592:
-    XXPERMDI(d, a, b, 2);
-    break;
-  case 624:
-    XXPERMDI(d, a, b, 3);
-    break;
-  default:
-    ASSERT_MSG(DYNA_REC, false, "Unexpected instruction {:#010x}", inst.hex);
-    break;
-  }
+  XXPERMDI(fpr.RW(inst.FD), a, b, dm);
 }
 
 void JitPPC64::EmitEstimate(UGeckoInstruction inst, bool rsqrte, bool paired)

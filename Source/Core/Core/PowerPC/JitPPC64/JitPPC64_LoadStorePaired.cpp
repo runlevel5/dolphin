@@ -166,22 +166,39 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
   else
     EmitMemoryAccess({.size = single ? type.size : 2 * type.size}, value, addr);
 
-  // Integers' halves are in big-endian order in value: half 0 in the upper bits.
-  const auto half0 = fpr.GetScopedReg();
-  const auto half1 = fpr.GetScopedReg();
+  // FD gets singles: a float's bits as they are, as ConvertToDouble keeps them, or an integer's
+  // value, converted to single precision exactly from double precision. Each half is in two words.
+  const VSR d = fpr.BindForSingles(inst.FD);
   const auto tmp = gpr.GetScopedReg();
   if (type.is_float)
   {
-    // As ConvertToDouble, from the single in word 0, and half 1 shifted there.
-    XSCVSPDPN(half0, VSR::VS0);
-    if (!single)
+    if (single)
     {
-      XXSLDWI(half1, VSR::VS0, VSR::VS0, 1);
-      XSCVSPDPN(half1, half1);
+      // ps1 is 1.0.
+      const auto half0 = fpr.GetScopedReg();
+      const auto one = fpr.GetScopedReg();
+      XXSPLTW(half0, VSR::VS0, 0);
+      if (m_isa_3_1)
+      {
+        XXSPLTIW(one, 0x3F800000);
+      }
+      else
+      {
+        LIS(tmp, 0x3F80);
+        MTVSRWZ(one, tmp);
+        XXSPLTW(one, one, 1);
+      }
+      XXPERMDI(d, half0, one, 0);
     }
+    else
+    {
+      XXMRGHW(d, VSR::VS0, VSR::VS0);
+    }
+    fpr.MarkSingles(inst.FD, false);
   }
   else
   {
+    // Integers' halves are in big-endian order in value: half 0 in the upper bits.
     // float(T(value)) * m_dequantizeTable[scale]: exact, as is doing it in double precision.
     const auto convert = [&](VSR out, GPR integer) {
       if (type.is_signed)
@@ -195,36 +212,39 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
         XSMULDP(out, out, factor);
       }
     };
-    if (single)
+    const auto doubles = fpr.GetScopedReg();
+    const auto half0 = fpr.GetScopedReg();
+    const auto half1 = fpr.GetScopedReg();
+    if (integer_pair)
     {
-      convert(half0, value);
-    }
-    else if (integer_pair)
-    {
-      // Into FD, with the factor in half1.
+      // With the factor in half1.
       if (exponent != 0)
         LoadPowerOfTwo(half1, tmp, -exponent, true);
       CLRLDI(tmp, value, 64 - type.size);
       SRDI(value, value, type.size);
-      DequantizePair(fpr.RW(inst.FD, false), value, tmp, type.size, type.is_signed,
+      DequantizePair(doubles, value, tmp, type.size, type.is_signed,
                      exponent != 0 ? VSR(half1) : VSR::VS0);
     }
     else
     {
-      CLRLDI(tmp, value, 64 - type.size);
-      SRDI(value, value, type.size);
-      convert(half0, value);
-      convert(half1, tmp);
+      if (single)
+      {
+        convert(half0, value);
+        // ps1 is 1.0.
+        LoadPowerOfTwo(half1, tmp, 0);
+      }
+      else
+      {
+        CLRLDI(tmp, value, 64 - type.size);
+        SRDI(value, value, type.size);
+        convert(half0, value);
+        convert(half1, tmp);
+      }
+      XXPERMDI(doubles, half0, half1, 0);
     }
+    ConvertDoublesToSingles(d, doubles);
+    fpr.MarkSingles(inst.FD, true);
   }
-
-  if (single)
-  {
-    // ps1 is 1.0.
-    LoadPowerOfTwo(half1, tmp, 0);
-  }
-  if (!integer_pair)
-    XXPERMDI(fpr.RW(inst.FD, false), half0, half1, 0);
 
   if (update)
     MR(a, addr);
@@ -291,6 +311,31 @@ void JitPPC64::ConvertDoubleToSingleFTZ(GPR value, GPR exp, GPR high)
   CLRLDI(value, value, 32);
 }
 
+void JitPPC64::FlushDenormalSingles(VSR out, VSR in)
+{
+  // Each word gets its sign alone if it's a denormal: with Power ISA 3.0, as the test of its data
+  // class says, or else if its magnitude is below that of the smallest normal single, which also
+  // keeps the sign of zeroes alone.
+  const auto magnitude = fpr.GetScopedReg();
+  const auto mask = fpr.GetScopedReg();
+  XVABSSP(magnitude, in);
+  if (m_isa_3_0)
+  {
+    XVTSTDCSP(mask, in, 0x03);
+  }
+  else
+  {
+    // 1 << 23, shifting by the low 5 bits of -9.
+    const auto shift = fpr.GetScopedReg();
+    VSPLTISW(mask, 1);
+    VSPLTISW(shift, -9);
+    VSLW(mask, mask, shift);
+    VCMPGTUW(mask, mask, magnitude);
+  }
+  XXLXOR(magnitude, magnitude, in);
+  XXSEL(out, in, magnitude, mask);
+}
+
 void JitPPC64::psq_stXX(UGeckoInstruction inst)
 {
   INSTRUCTION_START
@@ -333,10 +378,39 @@ void JitPPC64::psq_stXX(UGeckoInstruction inst)
       ADDI(addr, gpr.R(inst.RA), inst.SIMM_12);
   }
   CLRLDI(addr, addr, 32);
-  const VSR s = fpr.R(inst.FS);
+  const bool singles = fpr.HoldsSingles(inst.FS);
+  const VSR held = singles ? fpr.RSingle(inst.FS) : fpr.R(inst.FS);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
 
+  if (singles && type.is_float)
   {
+    // As ConvertToSingleFTZ: the singles as they are, but denormals become zeroes.
+    const auto flushed = fpr.GetScopedReg();
+    FlushDenormalSingles(flushed, held);
+    if (single)
+    {
+      // ps0 is in word 1 too.
+      MFVSRWZ(value, flushed);
+    }
+    else
+    {
+      // Words 1 and 2, ps0 and ps1, into doubleword 0.
+      XXSLDWI(flushed, flushed, flushed, 1);
+      MFVSRD(value, flushed);
+    }
+  }
+  else
+  {
+    // Singles are quantized from doubles, which quantizing rounds to single precision anyway.
+    PPC64FPRCache::ScopedReg doubles;
+    VSR s = held;
+    if (singles)
+    {
+      doubles = fpr.GetScopedReg();
+      XVCVSPDP(doubles, held);
+      s = doubles;
+    }
+
     const auto value1 = gpr.GetScopedReg();
     // ps1 swapped into doubleword 0. With Power ISA 3.0, ps1 of floats goes to a GPR with mfvsrld
     // instead, and integers are quantized both at once.
@@ -399,8 +473,9 @@ void JitPPC64::QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store,
                                              bool update, u32 gqr_index, bool single)
 {
   // The GQR may change while the block runs, so call the routine for its type, with its scale.
-  // They take the address in R3, the scale in R4 and the value in VS32, preserve the scratch
-  // GPRs, and may clobber R0, R3, R4, R12, CTR, VS32-VS35.
+  // They take the address in R3, the scale in R4 and the value in VS32, as doubles for stores and
+  // singles for loads, preserve the scratch GPRs, and may clobber R0, R3, R4, R12, CTR,
+  // VS32-VS35.
   ASSERT(!fpr.AnyScratchRegsInUse());
   const auto addr = gpr.GetScopedReg();
   if (indexed)
@@ -453,7 +528,11 @@ void JitPPC64::QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store,
     WriteConditionalExceptionExit(EXCEPTION_DSI, GPR::R12);
 
   if (!store)
-    XXLOR(fpr.RW(inst.FD, false), VSR::VS32, VSR::VS32);
+  {
+    // Floats may be signaling NaNs.
+    XXLOR(fpr.BindForSingles(inst.FD), VSR::VS32, VSR::VS32);
+    fpr.MarkSingles(inst.FD, false);
+  }
   if (update)
     MR(a, addr);
 }
@@ -542,26 +621,18 @@ void JitPPC64::GenerateQuantizedLoadRoutine(u32 type, bool single)
   BL(Routine(m_slow_access_routines[SlowAccessRoutineIndex({.size = size * 8})]));
   SetJumpTarget(loaded);
 
-  // The halves are in big-endian order in R3: half 0 in the upper bits.
+  // The halves are in big-endian order in R3: half 0 in the upper bits. They're returned as singles,
+  // each in two words, as psq_lXX leaves them.
   if (decoded.is_float)
   {
-    // As ConvertToDouble, from the single in word 0, and half 1 shifted there.
-    if (single && m_isa_3_0)
+    // The bits as they are, in words 0 and 1, with 1.0 for ps1 of the single form.
+    if (single)
     {
-      MTVSRWS(VSR::VS34, GPR::R3);
+      SLDI(GPR::R3, GPR::R3, 32);
+      ORIS(GPR::R3, GPR::R3, 0x3F80);
     }
-    else
-    {
-      if (single)
-        SLDI(GPR::R3, GPR::R3, 32);
-      MTVSRD(VSR::VS34, GPR::R3);
-    }
-    XSCVSPDPN(VSR::VS33, VSR::VS34);
-    if (!single)
-    {
-      XXSLDWI(VSR::VS34, VSR::VS34, VSR::VS34, 1);
-      XSCVSPDPN(VSR::VS34, VSR::VS34);
-    }
+    MTVSRD(VSR::VS34, GPR::R3);
+    XXMRGHW(VSR::VS32, VSR::VS34, VSR::VS34);
   }
   else
   {
@@ -602,13 +673,18 @@ void JitPPC64::GenerateQuantizedLoadRoutine(u32 type, bool single)
     }
   }
 
-  if (single)
+  if (!decoded.is_float)
   {
-    // ps1 is 1.0.
-    LoadPowerOfTwo(VSR::VS34, GPR::R12, 0);
+    if (single)
+    {
+      // ps1 is 1.0.
+      LoadPowerOfTwo(VSR::VS34, GPR::R12, 0);
+    }
+    if (!integer_pair)
+      XXPERMDI(VSR::VS32, VSR::VS33, VSR::VS34, 0);
+    // Exactly.
+    ConvertDoublesToSingles(VSR::VS32, VSR::VS32);
   }
-  if (!integer_pair)
-    XXPERMDI(VSR::VS32, VSR::VS33, VSR::VS34, 0);
 
   LD(GPR::R0, GPR::SP, QUANTIZED_LR_SAVE);
   MTLR(GPR::R0);

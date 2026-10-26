@@ -2151,6 +2151,48 @@ static void TestPairedFusedMultiplyAddCases(void)
   End("paired-fma-cases");
 }
 
+// Paired singles on halves made from doubles, which the JIT checks to be singles, and holds as
+// singles after when they are and are read again: singles, doubles that aren't, and NaNs that are
+// signaling, or don't fit in a single.
+static double PairedDoubleInput(void)
+{
+  static const u64 nans[] = {0x7FF4000000000000, 0x7FF8000020000000, 0xFFF0000020000000,
+                             0x7FF8000000000001};
+  switch (Random() % 4)
+  {
+  case 0:
+  case 1:
+    return SingleValue();
+  case 2:
+    return Double(((u64)Random() << 32 | Random()) & 0xBFFFFFFFFFFFFFFFULL);
+  default:
+    return Double(nans[Random() % 4]);
+  }
+}
+
+static void TestPairedDoubleInputs(void)
+{
+  double inputs[6] __attribute__((aligned(8)));
+  Begin();
+  for (u32 rounding = 0; rounding < 8; rounding += 4)
+  {
+    const double fpscr = Double(rounding);
+    for (int i = 0; i < ITERATIONS; i++)
+    {
+      BeginIteration();
+      for (int j = 0; j < 6; j++)
+        inputs[j] = PairedDoubleInput();
+      PSOPD("ps_mul %0,1,3\n\tps_madd %0,1,3,%0");
+      PSOPD("ps_add %0,1,2\n\tps_sub %0,%0,2");
+      PSOPD("ps_madds0 %0,1,3,2\n\tps_madds1 %0,1,3,%0");
+      PSOPD("ps_sum0 %0,1,2,3\n\tps_merge10 %0,%0,3");
+      PSOPD("ps_sum1 %0,1,2,3\n\tps_sel %0,%0,2,3");
+      PSOPD("ps_nmsub %0,1,3,2\n\tps_neg %0,%0\n\tps_div %0,%0,1");
+    }
+  }
+  End("paired-double-inputs");
+}
+
 #define GQR(n) (912 + (n))
 
 static void TestQuantizedLoadsAndStores(void)
@@ -3047,6 +3089,7 @@ int main(void)
   TestPairedSingles();
   TestPairedFusedMultiplyAddCases();
   TestPairedSingleInputs();
+  TestPairedDoubleInputs();
   TestEstimateNaNs();
   TestFPSCRAndRecordForms();
   TestFPSCRInstructions();

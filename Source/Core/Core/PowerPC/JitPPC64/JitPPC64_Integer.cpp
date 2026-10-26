@@ -129,7 +129,7 @@ bool JitPPC64::NextBranchTestsCRField(u32 field) const
     return false;
   const UGeckoInstruction next = js.op[1].inst;
   return (next.OPCD == 16 || (next.OPCD == 19 && next.SUBOP10 == 16)) &&
-         (next.BO & BO_DONT_CHECK_CONDITION) == 0 && next.BI >> 2 == field &&
+         (next.BO & BO_DONT_CHECK_CONDITION) == 0 && u32{next.BI} >> 2 == field &&
          3 - (next.BI & 3) != PowerPC::CR_SO_BIT;
 }
 
