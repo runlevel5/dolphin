@@ -23,6 +23,10 @@ namespace CoreTiming
 {
 struct EventType;
 }
+namespace CommandProcessor
+{
+struct SCPFifoStruct;
+}
 
 namespace Fifo
 {
@@ -78,7 +82,8 @@ public:
 
 private:
   void RefreshConfig();
-  void ReadDataFromFifo(u32 read_ptr);
+  void ReadDataFromFifo(u32 read_ptr, u32 size);
+  u32 GetGpuBatchSize(const CommandProcessor::SCPFifoStruct& fifo, u32 read_ptr) const;
   void ReadDataFromFifoOnCPU(u32 read_ptr);
   int RunGpuOnCpu(int ticks);
   int WaitForGpuThread(int ticks);
