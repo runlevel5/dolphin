@@ -7,6 +7,12 @@
 // compiled, as Jit64 does, and checked at the start of the block (see DoJit). With them known,
 // each instruction is compiled for its type and scale, and its memory access gets fastmem.
 // Otherwise, the instruction falls back to the interpreter.
+//
+// A block whose GQRs did change under it is compiled again without that, and would then call a
+// routine for the GQR's type at each access, with an indirect call that costs more than the
+// access. Instead each access is still compiled for the GQR's value at the time, and checks the
+// value itself, calling the routine in far code only when it differs: games that transform
+// vertices of different formats with one function change the GQRs between calls, not within.
 
 #include "Core/PowerPC/JitPPC64/Jit.h"
 
@@ -128,14 +134,20 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
   // The invalid form is left to the interpreter.
   FALLBACK_IF(update && inst.RA == 0);
 
-  if (!js.constantGqrValid[i])
+  const bool speculate = !js.constantGqrValid[i];
+  if (speculate && !CanSpeculateGqr(i))
   {
     QuantizedLoadStoreWithRoutine(inst, false, indexed, update, i, single);
     return;
   }
 
-  const UGQR gqr(js.constantGqr[i]);
+  const UGQR gqr(speculate ? GQR(m_ppc_state, i) : js.constantGqr[i]);
   const QuantizedType type = DecodeQuantizedType(gqr.ld_type);
+  if (speculate && !type.valid)
+  {
+    QuantizedLoadStoreWithRoutine(inst, false, indexed, update, i, single);
+    return;
+  }
   FALLBACK_IF(!type.valid);
   const s32 exponent = ScaleExponent(gqr.ld_scale);
   // With Power ISA 3.0, both halves of integers are converted at once.
@@ -159,6 +171,9 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
   }
   CLRLDI(addr, addr, 32);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
+  FixupBranch gqr_differs;
+  if (speculate)
+    gqr_differs = EmitGqrCheck(i, gqr.Hex, false);
 
   // Floats are loaded into VS0, which isn't allocated, half 0 in word 0 and half 1 in word 1.
   if (type.is_float)
@@ -168,8 +183,11 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
 
   // FD gets singles: a float's bits as they are, as ConvertToDouble keeps them, or an integer's
   // value, converted to single precision exactly from double precision. Each half is in two words.
-  const VSR d = fpr.BindForSingles(inst.FD);
+  // They go to a scratch register first, which the far code below fills too, so that FD isn't
+  // bound, and so written on an exception, before both have it.
+  const auto result = fpr.GetScopedReg();
   const auto tmp = gpr.GetScopedReg();
+  bool quiet = false;
   if (type.is_float)
   {
     if (single)
@@ -188,13 +206,12 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
         MTVSRWZ(one, tmp);
         XXSPLTW(one, one, 1);
       }
-      XXPERMDI(d, half0, one, 0);
+      XXPERMDI(result, half0, one, 0);
     }
     else
     {
-      XXMRGHW(d, VSR::VS0, VSR::VS0);
+      XXMRGHW(result, VSR::VS0, VSR::VS0);
     }
-    fpr.MarkSingles(inst.FD, false);
   }
   else
   {
@@ -242,9 +259,29 @@ void JitPPC64::psq_lXX(UGeckoInstruction inst)
       }
       XXPERMDI(doubles, half0, half1, 0);
     }
-    ConvertDoublesToSingles(d, doubles);
-    fpr.MarkSingles(inst.FD, true);
+    ConvertDoublesToSingles(result, doubles);
+    // The routine may load floats, which may be signaling NaNs.
+    quiet = !speculate;
   }
+
+  FixupBranch loaded;
+  if (speculate)
+  {
+    SwitchToFarCode();
+    SetJumpTarget(gqr_differs);
+    // The routine clobbers VS32-VS35, which only result may be, and it's written after.
+    EmitQuantizedRoutineCall(false, i, single, addr);
+    if (jo.memcheck)
+      WriteConditionalExceptionExit(EXCEPTION_DSI, GPR::R12);
+    XXLOR(result, VSR::VS32, VSR::VS32);
+    loaded = B();
+    SwitchToNearCode();
+    SetJumpTarget(loaded);
+  }
+
+  const VSR d = fpr.BindForSingles(inst.FD);
+  XXLOR(d, result, result);
+  fpr.MarkSingles(inst.FD, quiet);
 
   if (update)
     MR(a, addr);
@@ -348,14 +385,20 @@ void JitPPC64::psq_stXX(UGeckoInstruction inst)
   // The invalid form is left to the interpreter.
   FALLBACK_IF(update && inst.RA == 0);
 
-  if (!js.constantGqrValid[i])
+  const bool speculate = !js.constantGqrValid[i];
+  if (speculate && !CanSpeculateGqr(i))
   {
     QuantizedLoadStoreWithRoutine(inst, true, indexed, update, i, single);
     return;
   }
 
-  const UGQR gqr(js.constantGqr[i]);
+  const UGQR gqr(speculate ? GQR(m_ppc_state, i) : js.constantGqr[i]);
   const QuantizedType type = DecodeQuantizedType(gqr.st_type);
+  if (speculate && !type.valid)
+  {
+    QuantizedLoadStoreWithRoutine(inst, true, indexed, update, i, single);
+    return;
+  }
   FALLBACK_IF(!type.valid);
   const s32 exponent = ScaleExponent(gqr.st_scale);
   // With Power ISA 3.0, both halves of integers are quantized at once.
@@ -381,6 +424,9 @@ void JitPPC64::psq_stXX(UGeckoInstruction inst)
   const bool singles = fpr.HoldsSingles(inst.FS);
   const VSR held = singles ? fpr.RSingle(inst.FS) : fpr.R(inst.FS);
   const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
+  FixupBranch gqr_differs;
+  if (speculate)
+    gqr_differs = EmitGqrCheck(i, gqr.Hex, true);
 
   if (singles && type.is_float)
   {
@@ -465,40 +511,51 @@ void JitPPC64::psq_stXX(UGeckoInstruction inst)
 
   EmitMemoryAccess({.store = true, .size = single ? type.size : 2 * type.size}, value, addr);
 
+  const u8* const stored = GetCodePtr();
   if (update)
     MR(a, addr);
+
+  if (speculate)
+  {
+    SwitchToFarCode();
+    SetJumpTarget(gqr_differs);
+    // The routine takes doubles, in VS32. The host register holds them, or singles as it did.
+    if (fpr.HoldsSingles(inst.FS))
+      ConvertSinglesToDoubles(VSR::VS32, held, fpr.IsQuiet(inst.FS));
+    else
+      XXLOR(VSR::VS32, held, held);
+    EmitQuantizedRoutineCall(true, i, single, addr);
+    if (jo.memcheck)
+      WriteConditionalExceptionExit(EXCEPTION_DSI, GPR::R12);
+    B(stored);
+    SwitchToNearCode();
+  }
 }
 
-void JitPPC64::QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store, bool indexed,
-                                             bool update, u32 gqr_index, bool single)
+bool JitPPC64::CanSpeculateGqr(u32 gqr_index) const
 {
-  // The GQR may change while the block runs, so call the routine for its type, with its scale.
-  // They take the address in R3, the scale in R4 and the value in VS32, as doubles for stores and
-  // singles for loads, preserve the scratch GPRs, and may clobber R0, R3, R4, R12, CTR,
-  // VS32-VS35.
-  ASSERT(!fpr.AnyScratchRegsInUse());
-  const auto addr = gpr.GetScopedReg();
-  if (indexed)
-  {
-    if (inst.RA == 0)
-      CLRLDI(addr, gpr.R(inst.RB), 32);
-    else
-      ADD(addr, gpr.R(inst.RA), gpr.R(inst.RB));
-  }
-  else
-  {
-    if (inst.RA == 0)
-      MOVI2R(addr, static_cast<u32>(static_cast<s32>(inst.SIMM_12)));
-    else
-      ADDI(addr, gpr.R(inst.RA), inst.SIMM_12);
-  }
-  CLRLDI(addr, addr, 32);
-  const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
+  // A GQR the block sets isn't what it was at compile time when the access runs.
+  return !code_block.m_gqr_modified[gqr_index];
+}
+
+FixupBranch JitPPC64::EmitGqrCheck(u32 gqr_index, u32 value, bool store)
+{
+  // UGQR: st_type in bits 0-2, st_scale in 8-13, ld_type in 16-18, ld_scale in 24-29. The
+  // halfword with the type and scale of the access is compared. Uses R12.
+  LWZ(GPR::R12, PPC_REG, PPCSTATE_OFF_SPR(SPR_GQR0 + gqr_index));
   if (store)
-  {
-    const VSR s = fpr.R(inst.FS);
-    XXLOR(VSR::VS32, s, s);
-  }
+    CLRLWI(GPR::R12, GPR::R12, 16);
+  else
+    SRWI(GPR::R12, GPR::R12, 16);
+  CMPLWI(CRF::CR1, GPR::R12, static_cast<u16>(store ? value : value >> 16));
+  return BCFar(CCFlags::NE, CRF::CR1);
+}
+
+void JitPPC64::EmitQuantizedRoutineCall(bool store, u32 gqr_index, bool single, GPR addr)
+{
+  // The routines take the address in R3, the scale in R4 and the value in VS32, as doubles for
+  // stores and singles for loads, preserve the scratch GPRs, and may clobber R0, R3, R4, R12,
+  // CTR, VS32-VS35. The callers' scratch FPRs hold nothing live by the call.
 
   // The PC is used by memory checks, by GPFifo to find stores to the gather pipe, and in logs.
   MOVI2R(GPR::R12, js.compilerPC);
@@ -523,6 +580,36 @@ void JitPPC64::QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store,
   MTCTR(GPR::R12);
   MR(GPR::R3, addr);
   BCTRL();
+}
+
+void JitPPC64::QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store, bool indexed,
+                                             bool update, u32 gqr_index, bool single)
+{
+  // The GQR may change while the block runs, so call the routine for its type, with its scale.
+  ASSERT(!fpr.AnyScratchRegsInUse());
+  const auto addr = gpr.GetScopedReg();
+  if (indexed)
+  {
+    if (inst.RA == 0)
+      CLRLDI(addr, gpr.R(inst.RB), 32);
+    else
+      ADD(addr, gpr.R(inst.RA), gpr.R(inst.RB));
+  }
+  else
+  {
+    if (inst.RA == 0)
+      MOVI2R(addr, static_cast<u32>(static_cast<s32>(inst.SIMM_12)));
+    else
+      ADDI(addr, gpr.R(inst.RA), inst.SIMM_12);
+  }
+  CLRLDI(addr, addr, 32);
+  const GPR a = update ? gpr.RW(inst.RA, true) : GPR::R0;
+  if (store)
+  {
+    const VSR s = fpr.R(inst.FS);
+    XXLOR(VSR::VS32, s, s);
+  }
+  EmitQuantizedRoutineCall(store, gqr_index, single, addr);
 
   if (jo.memcheck)
     WriteConditionalExceptionExit(EXCEPTION_DSI, GPR::R12);

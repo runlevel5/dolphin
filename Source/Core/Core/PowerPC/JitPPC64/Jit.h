@@ -292,6 +292,11 @@ protected:
   void GenerateReciprocalSquareRootEstimateRoutine();
   void QuantizedLoadStoreWithRoutine(UGeckoInstruction inst, bool store, bool indexed, bool update,
                                      u32 gqr_index, bool single);
+  // Whether an access can be compiled for the GQR's value at compile time, with a check.
+  bool CanSpeculateGqr(u32 gqr_index) const;
+  // Branches away if the GQR's type and scale for a load, or a store, differ from value's.
+  PPC64Gen::FixupBranch EmitGqrCheck(u32 gqr_index, u32 value, bool store);
+  void EmitQuantizedRoutineCall(bool store, u32 gqr_index, bool single, PPC64Gen::GPR addr);
   void GenerateQuantizedLoadRoutine(u32 type, bool single);
   void GenerateQuantizedStoreRoutine(u32 type, bool single);
   std::array<PPC64Gen::FixupBranch, 3> EmitQuantizedRAMAddress(u32 size);
