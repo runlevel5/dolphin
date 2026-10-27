@@ -453,6 +453,11 @@ void FifoManager::FlushGpu()
   m_gpu_mainloop.Wait();
 }
 
+bool FifoManager::IsGpuThreadBusy() const
+{
+  return m_system.IsDualCoreMode() && !m_use_deterministic_gpu_thread && !m_gpu_mainloop.IsDone();
+}
+
 u64 FifoManager::GetFifoBytesWritten() const
 {
   // Only the GPU thread's reads are counted; in the other modes everything counts as read.

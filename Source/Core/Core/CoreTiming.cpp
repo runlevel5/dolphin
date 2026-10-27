@@ -573,15 +573,39 @@ void CoreTimingManager::AdjustEventQueueTimes(u32 new_ppc_clock, u32 old_ppc_clo
 
 void CoreTimingManager::Idle()
 {
-  if (m_config_sync_on_skip_idle)
+  auto& ppc_state = m_system.GetPPCState();
+
+  if (m_config_sync_on_skip_idle && m_system.GetFifo().IsGpuThreadBusy())
   {
-    // When the FIFO is processing data we must not advance because in this way
-    // the VI will be desynchronized. So, We are waiting until the FIFO finish and
-    // while we process only the events required by the FIFO.
-    m_system.GetFifo().FlushGpu();
+    // The GPU thread is still working on FIFO data. Skipping to the next event now would make
+    // the GPU appear to take that long, and a game waiting for it would drop frames; stopping
+    // the clock until the GPU thread is done, as this used to do, keeps the CPU thread waiting
+    // too. Instead the clock runs at host pace, as the idle loop keeps coming back here, until
+    // the GPU thread is done. Whatever the game waits for (the GPU, VBlank or a timer) then
+    // comes when it would on real hardware, and the CPU thread runs its interrupt handlers and
+    // the next frame while the GPU thread finishes.
+    const TimePoint now = Clock::now();
+    // A long gap since the last call means the idle loop has only just been entered.
+    if (now - m_idle_last_call > std::chrono::microseconds{100})
+      m_idle_clock_reference = now;
+    m_idle_last_call = now;
+
+    const u32 clock_per_sec = m_throttle_adj_clock_per_sec != 0 ?
+                                  m_throttle_adj_clock_per_sec :
+                                  m_system.GetSystemTimers().GetTicksPerSecond();
+    const std::chrono::duration<double> elapsed = now - m_idle_clock_reference;
+    const s64 cycles = std::min<s64>(elapsed.count() * clock_per_sec, MAX_SLICE_LENGTH);
+    const int skip = std::min(CyclesToDowncount(static_cast<int>(cycles)), ppc_state.downcount);
+    if (skip > 0)
+    {
+      m_idle_clock_reference = now;
+      PowerPC::UpdatePerformanceMonitor(skip, 0, 0, ppc_state);
+      m_idled_cycles += DowncountToCycles(skip);
+      ppc_state.downcount -= skip;
+    }
+    return;
   }
 
-  auto& ppc_state = m_system.GetPPCState();
   PowerPC::UpdatePerformanceMonitor(ppc_state.downcount, 0, 0, ppc_state);
   m_idled_cycles += DowncountToCycles(ppc_state.downcount);
   ppc_state.downcount = 0;

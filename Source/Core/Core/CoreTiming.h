@@ -216,6 +216,11 @@ private:
   u32 m_throttle_adj_clock_per_sec = 0;
   bool m_throttle_disable_vi_int = false;
 
+  // Host time of the last Idle() call, and of the last one that advanced the clock, while the
+  // GPU thread is behind.
+  TimePoint m_idle_last_call = {};
+  TimePoint m_idle_clock_reference = {};
+
   DT m_max_fallback = {};
   DT m_max_variance = {};
   bool m_correct_time_drift = false;

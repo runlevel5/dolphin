@@ -73,6 +73,8 @@ public:
   void* PopFifoAuxBuffer(size_t size);
 
   void FlushGpu();
+  // Whether the GPU thread is working on FIFO data (always false outside dual core mode).
+  bool IsGpuThreadBusy() const;
   // Called from the CPU thread: how much has been written to the FIFO so far, counted the way
   // the GPU thread counts what it has read. Used to order async requests after the FIFO data
   // that precedes them.
