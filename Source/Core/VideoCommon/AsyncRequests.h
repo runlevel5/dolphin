@@ -7,6 +7,7 @@
 #include <functional>
 #include <future>
 
+#include "Common/CommonTypes.h"
 #include "Common/Functional.h"
 #include "Common/SPSCQueue.h"
 
@@ -18,8 +19,10 @@ class AsyncRequests
 public:
   AsyncRequests();
 
-  // Called from the Video thread.
-  void PullEvents();
+  // Called from the Video thread. Runs the events that were queued once no more than `fifo_done`
+  // bytes had been written to the FIFO, so that they see everything the CPU thread sent before
+  // them. With `all`, runs every queued event.
+  void PullEvents(u64 fifo_done, bool all);
 
   // The following are called from the CPU thread.
   void WaitForEmptyQueue();
@@ -33,7 +36,7 @@ public:
       return;
     }
 
-    QueueEvent(Event{std::forward<F>(callback)});
+    QueueEvent(std::forward<F>(callback));
   }
 
   template <std::invocable<> F>
@@ -43,7 +46,7 @@ public:
       return std::invoke(std::forward<F>(callback));
 
     std::packaged_task task{std::forward<F>(callback)};
-    QueueEvent(Event{[&] { task(); }});
+    QueueEvent([&] { task(); });
 
     return task.get_future().get();
   }
@@ -54,9 +57,14 @@ public:
   static AsyncRequests* GetInstance() { return &s_singleton; }
 
 private:
-  using Event = Common::MoveOnlyFunction<void()>;
+  struct Event
+  {
+    // How much had been written to the FIFO when the event was queued.
+    u64 fifo_position;
+    Common::MoveOnlyFunction<void()> callback;
+  };
 
-  void QueueEvent(Event&& event);
+  void QueueEvent(Common::MoveOnlyFunction<void()>&& callback);
 
   static AsyncRequests s_singleton;
 

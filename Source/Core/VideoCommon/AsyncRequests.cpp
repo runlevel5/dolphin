@@ -14,28 +14,29 @@ AsyncRequests AsyncRequests::s_singleton;
 
 AsyncRequests::AsyncRequests() = default;
 
-void AsyncRequests::PullEvents()
+void AsyncRequests::PullEvents(u64 fifo_done, bool all)
 {
-  if (m_queue.Empty())
+  if (m_queue.Empty() || (!all && m_queue.Front().fifo_position > fifo_done))
     return;
 
   // This is only called if the queue isn't empty.
   // So just flush the pipeline to get accurate results.
   g_vertex_manager->Flush();
 
-  while (!m_queue.Empty())
+  while (!m_queue.Empty() && (all || m_queue.Front().fifo_position <= fifo_done))
   {
-    std::invoke(std::move(m_queue.Front()));
+    std::invoke(std::move(m_queue.Front().callback));
     m_queue.Pop();
   }
 }
 
-void AsyncRequests::QueueEvent(Event&& event)
+void AsyncRequests::QueueEvent(Common::MoveOnlyFunction<void()>&& callback)
 {
-  m_queue.Push(std::move(event));
-
   auto& system = Core::System::GetInstance();
-  system.GetFifo().RunGpu();
+  auto& fifo = system.GetFifo();
+
+  m_queue.Push(Event{fifo.GetFifoBytesWritten(), std::move(callback)});
+  fifo.RunGpu();
 }
 
 void AsyncRequests::WaitForEmptyQueue()

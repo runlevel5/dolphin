@@ -73,6 +73,10 @@ public:
   void* PopFifoAuxBuffer(size_t size);
 
   void FlushGpu();
+  // Called from the CPU thread: how much has been written to the FIFO so far, counted the way
+  // the GPU thread counts what it has read. Used to order async requests after the FIFO data
+  // that precedes them.
+  u64 GetFifoBytesWritten() const;
   void RunGpu();
   void GpuMaySleep();
   void RunGpuLoop();
@@ -127,6 +131,8 @@ private:
   std::atomic<int> m_sync_ticks = 0;
   bool m_syncing_suspended = false;
   Common::Event m_sync_wakeup_event;
+  // Bytes the GPU thread has taken out of the FIFO, when it owns the FIFO.
+  std::atomic<u64> m_fifo_bytes_read = 0;
 
   std::optional<Config::ConfigChangedCallbackID> m_config_callback_id = std::nullopt;
   bool m_config_sync_gpu = false;

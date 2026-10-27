@@ -333,11 +333,13 @@ void FifoManager::RunGpuLoop()
 {
   m_gpu_mainloop.Run(
       [this] {
-        // Run events from the CPU thread.
-        AsyncRequests::GetInstance()->PullEvents();
+        // Run events from the CPU thread. While paused there is no FIFO data to wait for.
+        const bool running = m_emu_running_state.IsSet();
+        AsyncRequests::GetInstance()->PullEvents(m_fifo_bytes_read.load(std::memory_order_relaxed),
+                                                 !running);
 
         // Do nothing while paused
-        if (!m_emu_running_state.IsSet())
+        if (!running)
           return;
 
         if (m_use_deterministic_gpu_thread)
@@ -391,6 +393,8 @@ void FifoManager::RunGpuLoop()
                 DataReader(m_video_buffer_read_ptr, write_ptr), &cyclesExecuted);
 
             fifo.CPReadPointer.store(readPtr, std::memory_order_relaxed);
+            // Counted before the distance shrinks: see GetFifoBytesWritten.
+            m_fifo_bytes_read.fetch_add(size, std::memory_order_release);
             fifo.CPReadWriteDistance.fetch_sub(size, std::memory_order_seq_cst);
             if ((write_ptr - m_video_buffer_read_ptr) == 0)
             {
@@ -414,8 +418,10 @@ void FifoManager::RunGpuLoop()
             // This call is pretty important in DualCore mode and must be called in the FIFO Loop.
             // If we don't, s_swapRequested or s_efbAccessRequested won't be set to false
             // leading the CPU thread to wait in Video_OutputXFB or Video_AccessEFB thus slowing
-            // things down.
-            AsyncRequests::GetInstance()->PullEvents();
+            // things down. Only the events queued behind data that has now been read are run,
+            // so a swap or an EFB access can't get ahead of the FIFO while the GPU thread lags.
+            AsyncRequests::GetInstance()->PullEvents(
+                m_fifo_bytes_read.load(std::memory_order_relaxed), false);
           }
 
           // fast skip remaining GPU time if fifo is empty
@@ -430,6 +436,10 @@ void FifoManager::RunGpuLoop()
           // Make sure VertexManager finishes drawing any primitives it has stored in it's buffer.
           g_vertex_manager->Flush();
           g_framebuffer_manager->RefreshPeekCache();
+
+          // Whatever is left (a breakpoint, reads disabled) won't be processed for now, so the
+          // events still waiting for it must not wait any longer either.
+          AsyncRequests::GetInstance()->PullEvents(0, true);
         }
       },
       100);
@@ -441,6 +451,20 @@ void FifoManager::FlushGpu()
     return;
 
   m_gpu_mainloop.Wait();
+}
+
+u64 FifoManager::GetFifoBytesWritten() const
+{
+  // Only the GPU thread's reads are counted; in the other modes everything counts as read.
+  if (!m_system.IsDualCoreMode() || m_use_deterministic_gpu_thread)
+    return 0;
+
+  // The GPU thread adds to the bytes read before it takes them off the distance, and the
+  // distance is loaded first here, so the sum can only overshoot what the CPU thread has written.
+  // An event that waits for slightly too much is run once the FIFO is empty anyway.
+  const auto& fifo = m_system.GetCommandProcessor().GetFifo();
+  const u64 distance = fifo.CPReadWriteDistance.load(std::memory_order_acquire);
+  return m_fifo_bytes_read.load(std::memory_order_relaxed) + distance;
 }
 
 void FifoManager::GpuMaySleep()
