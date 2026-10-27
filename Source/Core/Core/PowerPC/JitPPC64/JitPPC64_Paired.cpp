@@ -40,7 +40,7 @@ void JitPPC64::BindPairedOperand(PairedOperand& operand, u32 preg)
 bool JitPPC64::IsReadAgainAsSingles(u32 preg) const
 {
   // By a later paired single instruction of the block, before another writes it.
-  for (u32 i = 1; i <= js.instructionsLeft; i++)
+  for (int i = 1; i <= js.instructionsLeft; i++)
   {
     const PPCAnalyst::CodeOp& op = js.op[i];
     if (op.skip)
