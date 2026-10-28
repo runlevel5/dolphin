@@ -112,13 +112,13 @@ public:
   void RemoveAllPageTableMappings();
 
   // For a JIT that translates addresses for itself, for the accesses that don't use fastmem: once
-  // enabled, the offset into RAM that the page table maps each logical page to, with
-  // PAGE_TRANSLATION_READABLE or both flags set, or 0 where it maps none or not RAM, kept as the
-  // page table mappings are. nullptr until then.
+  // enabled, the host address of the RAM that the page table maps each logical page to, with
+  // PAGE_TRANSLATION_READABLE or both flags set in its low bits, or 0 where it maps none or not
+  // RAM, kept as the page table mappings are. nullptr until then.
   void EnablePageTranslations();
-  const u32* GetPageTranslations() const { return m_page_translations.get(); }
-  static constexpr u32 PAGE_TRANSLATION_READABLE = 1;
-  static constexpr u32 PAGE_TRANSLATION_WRITEABLE = 2;
+  const u64* GetPageTranslations() const { return m_page_translations.get(); }
+  static constexpr u64 PAGE_TRANSLATION_READABLE = 1;
+  static constexpr u64 PAGE_TRANSLATION_WRITEABLE = 2;
 
   void Clear();
 
@@ -292,7 +292,7 @@ private:
   static constexpr u32 INVALID_MAPPING = 0xFFFFFFFF;
   std::map<u32, std::vector<u32>> m_large_readable_pages;
   std::map<u32, std::vector<u32>> m_large_writeable_pages;
-  std::unique_ptr<u32[]> m_page_translations;
+  std::unique_ptr<u64[]> m_page_translations;
 
   Core::System& m_system;
 

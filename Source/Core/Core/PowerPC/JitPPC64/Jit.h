@@ -302,6 +302,9 @@ protected:
   std::array<PPC64Gen::FixupBranch, 3> EmitQuantizedRAMAddress(u32 size);
   void GenerateSlowAccessRoutine(MemAccess access, bool translate_inline);
   void EmitTranslatedRAMAccess(MemAccess access);
+  PPC64Gen::FixupBranch EmitPageTranslation(MemAccess access, PPC64Gen::GPR addr);
+  bool CanTranslateInline() const;
+  std::vector<PPC64Gen::FixupBranch> EmitInlineTranslation(MemAccess access, PPC64Gen::GPR addr);
   bool HandleFastmemFault(SContext* ctx);
 
   // Slow paths go in far code, out of the way of the code that runs.
@@ -528,6 +531,9 @@ protected:
   std::map<const u8*, const u8*> m_fault_to_handler;
 
   std::array<const u8*, 32> m_slow_access_routines{};
+  // Whether the slow access routines translate addresses themselves, and accesses in blocks that
+  // run with data translation translate theirs before they call one.
+  bool m_translate_inline = false;
   // Takes a pending exception at the PC in R3, after subtracting the cycles in R4.
   const u8* m_exception_exit_routine = nullptr;
   // Quantized loads and stores whose GQR isn't known when compiling, indexed by W << 3 | type.

@@ -60,6 +60,7 @@ bool JitPPC64::Init()
   InitFastmemArena();
   // For the slow accesses, which translate addresses themselves in MMU mode.
   m_system.GetMemory().EnablePageTranslations();
+  m_ppc_state.page_translations = m_system.GetMemory().GetPageTranslations();
 
   RefreshConfig();
 

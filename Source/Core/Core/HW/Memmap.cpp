@@ -341,8 +341,8 @@ void MemoryManager::AddPageTableMapping(u32 logical_address, u32 translated_addr
     // RAM is at physical addresses below 0x08000000, mirrored.
     const bool ram = (translated_address & 0xF8000000) == 0;
     m_page_translations[logical_address / PowerPC::HW_PAGE_SIZE] =
-        ram ? (translated_address & m_ram_mask) | PAGE_TRANSLATION_READABLE |
-                  (writeable ? PAGE_TRANSLATION_WRITEABLE : 0) :
+        ram ? reinterpret_cast<u64>(m_ram + (translated_address & m_ram_mask)) |
+                  PAGE_TRANSLATION_READABLE | (writeable ? PAGE_TRANSLATION_WRITEABLE : 0) :
               0;
   }
 
@@ -509,7 +509,7 @@ void MemoryManager::RemoveHostPageTableMapping(u32 logical_address)
 void MemoryManager::EnablePageTranslations()
 {
   if (!m_page_translations)
-    m_page_translations = std::make_unique<u32[]>(0x1'0000'0000 / PowerPC::HW_PAGE_SIZE);
+    m_page_translations = std::make_unique<u64[]>(0x1'0000'0000 / PowerPC::HW_PAGE_SIZE);
 }
 
 void MemoryManager::ClearPageTranslations()

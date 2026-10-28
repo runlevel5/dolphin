@@ -184,6 +184,8 @@ struct PowerPCState
   alignas(8) u32 spr[1024]{};
 
   u8* mem_ptr = nullptr;
+  // MemoryManager's page translations, for JitPPC64.
+  const u64* page_translations = nullptr;
 
   u32 pagetable_base = 0;
   u32 pagetable_mask = 0;

@@ -8,6 +8,12 @@
 // Addresses that aren't mapped in the arena, such as MMIO, fault. The fault handler then patches
 // the access into a branch to its slow path in far code, which calls the MMU and branches back.
 // Without fastmem, accesses always take the slow path, inline.
+//
+// With the MMU, the pages the page table maps are in the arena only when a host page's worth of
+// them are mapped together, which 64 KiB host pages seldom see, so the slow path of an access in a
+// block that runs with data translation first translates the address by MemoryManager's page
+// translations, and accesses RAM directly on a hit: a dozen instructions, against the call and
+// the MMU's lookup.
 
 #include "Core/PowerPC/JitPPC64/Jit.h"
 
@@ -129,6 +135,23 @@ void JitPPC64::EmitLoadToVSR(u32 size, VSR raw, GPR value, GPR addr)
 
   SwitchToFarCode();
   m_fault_to_handler[fault_pc] = GetCodePtr();
+  if (CanTranslateInline())
+  {
+    const std::vector<FixupBranch> misses = EmitInlineTranslation({.size = size}, addr);
+    if (size == 64)
+    {
+      LXSDX(raw, GPR::R0, GPR::R12);
+      XXBRD(raw, raw);
+    }
+    else
+    {
+      LXVWSX(raw, GPR::R0, GPR::R12);
+      XXBRW(raw, raw);
+    }
+    B(fast_end);
+    for (const FixupBranch& miss : misses)
+      SetJumpTarget(miss);
+  }
   EmitSlowAccess({.size = size}, value, addr);
   move();
   B(fast_end);
@@ -159,6 +182,18 @@ void JitPPC64::EmitStoreFromVSR(u32 size, VSR src, GPR value, GPR addr)
 
   SwitchToFarCode();
   m_fault_to_handler[fault_pc] = GetCodePtr();
+  if (CanTranslateInline())
+  {
+    const std::vector<FixupBranch> misses =
+        EmitInlineTranslation({.store = true, .size = size}, addr);
+    if (size == 64)
+      STXSDX(VSR::VS0, GPR::R0, GPR::R12);
+    else
+      STXSIWX(VSR::VS0, GPR::R0, GPR::R12);
+    B(fast_end);
+    for (const FixupBranch& miss : misses)
+      SetJumpTarget(miss);
+  }
   MFVSRD(value, src);
   EmitSlowAccess({.store = true, .size = size}, value, addr);
   B(fast_end);
@@ -238,6 +273,14 @@ void JitPPC64::EmitMemoryAccessToAddress(MemAccess access, GPR value, GPR addr)
 
   SwitchToFarCode();
   m_fault_to_handler[fault_pc] = GetCodePtr();
+  if (CanTranslateInline())
+  {
+    const std::vector<FixupBranch> misses = EmitInlineTranslation(access, addr);
+    EmitFastAccess(access, value, GPR::R12, GPR::R0);
+    B(fast_end);
+    for (const FixupBranch& miss : misses)
+      SetJumpTarget(miss);
+  }
   EmitSlowAccess(access, value, addr);
   B(fast_end);
   SwitchToNearCode();
@@ -301,8 +344,8 @@ void JitPPC64::GenerateSlowAccessRoutines()
   // With the MMU, they first translate the address themselves when they can. Memory checks and the
   // accurate CPU cache need the MMU's accesses; changing those clears the cache, which generates
   // the routines again.
-  const bool translate_inline = m_system.IsMMUMode() && !m_accurate_cpu_cache_enabled &&
-                                !m_system.GetPowerPC().GetMemChecks().HasAny();
+  m_translate_inline = m_system.IsMMUMode() && !m_accurate_cpu_cache_enabled &&
+                       !m_system.GetPowerPC().GetMemChecks().HasAny();
   m_slow_access_routines = {};
   for (const bool store : {false, true})
   {
@@ -319,7 +362,7 @@ void JitPPC64::GenerateSlowAccessRoutines()
           }
           const MemAccess access{store, size, sign_extend, reverse};
           m_slow_access_routines[SlowAccessRoutineIndex(access)] = GetCodePtr();
-          GenerateSlowAccessRoutine(access, translate_inline);
+          GenerateSlowAccessRoutine(access, m_translate_inline);
         }
       }
     }
@@ -356,20 +399,10 @@ void JitPPC64::EmitTranslatedRAMAccess(MemAccess access)
   // pages it can't map, with 64 KiB host pages, and the accesses that faulted before the page was
   // mapped. They leave out BATs, memory checks, uncached pages and pages not in RAM, and pages
   // whose R bit, or C bit for stores, isn't set yet, which the TLB lookup below takes care of.
-  if (const u32* translations = memory.GetPageTranslations())
+  if (memory.GetPageTranslations())
   {
-    MOVP2R(GPR::R12, translations);
-    RLWINM(GPR::R0, GPR::R3, 32 - PowerPC::HW_PAGE_INDEX_SHIFT + 2,
-           PowerPC::HW_PAGE_INDEX_SHIFT - 2, 29);
-    LWZX(GPR::R12, GPR::R12, GPR::R0);
-    ANDI_(GPR::R0, GPR::R12,
-          access.store ? Memory::MemoryManager::PAGE_TRANSLATION_WRITEABLE :
-                         Memory::MemoryManager::PAGE_TRANSLATION_READABLE);
-    const FixupBranch not_translated = BC(CCFlags::EQ, CRF::CR0);
-    // The offset into RAM.
-    RLWIMI(GPR::R12, GPR::R3, 0, 32 - PowerPC::HW_PAGE_INDEX_SHIFT, 31);
-    MOVP2R(GPR::R0, memory.GetRAM());
-    EmitFastAccess(access, access.store ? GPR::R4 : GPR::R3, GPR::R0, GPR::R12);
+    const FixupBranch not_translated = EmitPageTranslation(access, GPR::R3);
+    EmitFastAccess(access, access.store ? GPR::R4 : GPR::R3, GPR::R12, GPR::R0);
     BLR();
     SetJumpTarget(not_translated);
   }
@@ -562,6 +595,47 @@ void JitPPC64::GenerateSlowAccessRoutine(MemAccess access, bool translate_inline
   LD(GPR::R0, GPR::SP, ROUTINE_LR_SAVE);
   MTLR(GPR::R0);
   BLR();
+}
+
+FixupBranch JitPPC64::EmitPageTranslation(MemAccess access, GPR addr)
+{
+  // From the address in addr, zero-extended, leaves the host address of the RAM that the page
+  // table maps it to in R12, by the page translations, or branches away when it maps none, or none
+  // writeable for a store. Uses R0.
+  LD(GPR::R12, PPC_REG, PPCSTATE_OFF(page_translations));
+  RLWINM(GPR::R0, addr, 32 - PowerPC::HW_PAGE_INDEX_SHIFT + 3, PowerPC::HW_PAGE_INDEX_SHIFT - 3,
+         28);
+  LDX(GPR::R12, GPR::R12, GPR::R0);
+  const u64 flag = access.store ? Memory::MemoryManager::PAGE_TRANSLATION_WRITEABLE :
+                                  Memory::MemoryManager::PAGE_TRANSLATION_READABLE;
+  ANDI_(GPR::R0, GPR::R12, static_cast<u16>(flag));
+  const FixupBranch not_translated = BC(CCFlags::EQ, CRF::CR0);
+  // The offset in the page, over the flags.
+  RLDIMI(GPR::R12, addr, 0, 64 - PowerPC::HW_PAGE_INDEX_SHIFT);
+  return not_translated;
+}
+
+bool JitPPC64::CanTranslateInline() const
+{
+  // A block is compiled for its MSR[DR], and only translated accesses have page translations.
+  return m_translate_inline && (m_ppc_state.feature_flags & FEATURE_FLAG_MSR_DR) != 0;
+}
+
+std::vector<FixupBranch> JitPPC64::EmitInlineTranslation(MemAccess access, GPR addr)
+{
+  // In the far code of an access that faulted: leaves the host address in R12 for an access to a
+  // page the page table maps, or branches away, to the slow access, for one that crosses a page or
+  // whose page it doesn't. Uses R0.
+  std::vector<FixupBranch> misses;
+  const u32 size = access.size / 8;
+  if (size > 1)
+  {
+    CLRLWI(GPR::R0, addr, 32 - PowerPC::HW_PAGE_INDEX_SHIFT);
+    CMPLWI(CRF::CR0, GPR::R0, PowerPC::HW_PAGE_SIZE - size);
+    misses.push_back(BC(CCFlags::GT, CRF::CR0));
+  }
+  misses.push_back(EmitPageTranslation(access, addr));
+  return misses;
 }
 
 void JitPPC64::EmitSlowAccess(MemAccess access, GPR value, GPR addr)
