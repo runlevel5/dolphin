@@ -251,6 +251,8 @@ public:
   void SRUpdated();
   void InvalidateTLBEntry(u32 address);
   void PageTableUpdated();
+  // After a tlbie: looks at the PTEs for its page only.
+  void PageTableUpdatedForPage(u32 effective_address);
   static void PageTableUpdatedFromJit(MMU* mmu);
   void DBATUpdated();
   void IBATUpdated();
@@ -337,7 +339,8 @@ private:
 
   void ClearPageTable();
   void ReloadPageTable();
-  void PageTableUpdated(std::span<const u8> page_table);
+  // Updates the mappings from the page table, all of it, or the PTEGs at the given offsets in it.
+  void PageTableUpdated(std::span<const u8> page_table, std::span<const u32> pteg_offsets = {});
 
   void UpdateBATs(BatTable& bat_table, u32 base_spr);
   void UpdateFakeMMUBat(BatTable& bat_table, u32 start_addr);
@@ -365,6 +368,7 @@ private:
 
   // These are kept around just for their memory allocations. They are always cleared before use.
   std::vector<u8> m_temp_page_table;
+  std::vector<u32> m_temp_pteg_offsets;
   std::set<u32> m_removed_mappings;
   std::map<u32, u32> m_added_readonly_mappings;
   std::map<u32, u32> m_added_readwrite_mappings;

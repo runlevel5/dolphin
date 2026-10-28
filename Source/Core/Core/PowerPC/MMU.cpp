@@ -1381,7 +1381,7 @@ void MMU::InvalidateTLBEntry(u32 address)
   m_ppc_state.tlb[PowerPC::INST_TLB_INDEX][entry_index].Invalidate();
 
   if (m_ppc_state.msr.DR)
-    PageTableUpdated();
+    PageTableUpdatedForPage(address);
   else
     m_ppc_state.pagetable_update_pending = true;
 }
@@ -1439,7 +1439,56 @@ void MMU::PageTableUpdated()
   PageTableUpdated(std::span(page_table_view, page_table_size));
 }
 
-void MMU::PageTableUpdated(std::span<const u8> page_table)
+void MMU::PageTableUpdatedForPage(u32 effective_address)
+{
+  // Software executes tlbie after it changes the PTEs of a page, so those are looked at: in the
+  // PTEGs the page hashes to with the VSID of each segment register, primary and secondary. A PTE
+  // changed elsewhere, without a tlbie, waits for the next update of the whole page table, as it
+  // may on hardware for the TLB to drop its translation.
+  if (m_ppc_state.pagetable_update_pending || !m_system.GetJitInterface().WantsPageTableMappings())
+  {
+    PageTableUpdated();
+    return;
+  }
+
+  const u32 page_table_base = m_ppc_state.pagetable_base;
+  const u32 page_table_end =
+      Common::AlignUp(page_table_base | m_ppc_state.pagetable_mask, PAGE_TABLE_MIN_SIZE);
+  const u32 page_table_size = page_table_end - page_table_base;
+
+  u8* page_table_view = m_system.GetMemory().GetPointerForRange(page_table_base, page_table_size);
+  if (!page_table_view || m_page_table.size() != page_table_size)
+  {
+    PageTableUpdated();
+    return;
+  }
+
+  const u32 page_index = EffectiveAddress{effective_address}.page_index;
+  m_temp_pteg_offsets.clear();
+  for (const u32 sr_hex : m_ppc_state.sr)
+  {
+    const auto sr = UReg_SR{sr_hex};
+    if (sr.T != 0)
+      continue;
+
+    const u32 hash = sr.VSID ^ page_index;
+    for (const u32 h : {hash, ~hash})
+    {
+      const u32 pteg_address = ((h << 6) & m_ppc_state.pagetable_mask) | page_table_base;
+      const u32 offset = pteg_address - page_table_base;
+      // Where a PTEG the page table holds twice would be, as the whole update skips it.
+      const u32 i = offset & ~(PAGE_TABLE_MIN_SIZE - 1);
+      if ((i & m_ppc_state.pagetable_mask) != i || (i & m_ppc_state.pagetable_base) != 0)
+        continue;
+      if (std::ranges::find(m_temp_pteg_offsets, offset) == m_temp_pteg_offsets.end())
+        m_temp_pteg_offsets.push_back(offset);
+    }
+  }
+
+  PageTableUpdated(std::span(page_table_view, page_table_size), m_temp_pteg_offsets);
+}
+
+void MMU::PageTableUpdated(std::span<const u8> page_table, std::span<const u32> pteg_offsets)
 {
   // PowerPC's priority order for PTEs that have the same logical adress is as follows:
   //
@@ -1647,73 +1696,84 @@ void MMU::PageTableUpdated(std::span<const u8> page_table)
 
   bool run_pass_2 = false;
 
-  // Pass 1: Remove old mappings and add new primary (H=0) mappings.
-  for (u32 i = 0; i < page_table.size(); i += PAGE_TABLE_MIN_SIZE)
-  {
-    if ((i & m_ppc_state.pagetable_mask) != i || (i & m_ppc_state.pagetable_base) != 0)
-      continue;
-
-    for (u32 j = 0; j < PAGE_TABLE_MIN_SIZE; j += 64)
+  // Each PTEG, by the offset of its 64 bytes: all of them, or the given ones.
+  const auto for_each_pteg = [this, &page_table, &pteg_offsets](auto&& f) {
+    if (!pteg_offsets.empty())
     {
-      if (compare_64_bytes(old_page_table + i + j, new_page_table + i + j)) [[likely]]
+      for (const u32 offset : pteg_offsets)
+        f(offset);
+      return;
+    }
+    for (u32 i = 0; i < page_table.size(); i += PAGE_TABLE_MIN_SIZE)
+    {
+      if ((i & m_ppc_state.pagetable_mask) != i || (i & m_ppc_state.pagetable_base) != 0)
         continue;
 
-      for (u32 k = 0; k < 64; k += 8)
+      for (u32 j = 0; j < PAGE_TABLE_MIN_SIZE; j += 64)
+        f(i + j);
+    }
+  };
+
+  // Pass 1: Remove old mappings and add new primary (H=0) mappings.
+  for_each_pteg([&](u32 pteg) {
+    if (compare_64_bytes(old_page_table + pteg, new_page_table + pteg)) [[likely]]
+      return;
+
+    for (u32 k = 0; k < 64; k += 8)
+    {
+      if (std::memcmp(old_page_table + pteg + k, new_page_table + pteg + k, 8) == 0) [[likely]]
+        continue;
+
+      // Remove old mappings.
+      UPTE_Lo old_pte1(Common::swap32(old_page_table + pteg + k));
+      if (old_pte1.V)
       {
-        if (std::memcmp(old_page_table + i + j + k, new_page_table + i + j + k, 8) == 0) [[likely]]
+        const u32 priority = (k / 8) | (old_pte1.H << 3);
+        std::optional<EffectiveAddress> logical_address = get_page_index(old_pte1, pteg / 64);
+        if (!logical_address)
           continue;
 
-        // Remove old mappings.
-        UPTE_Lo old_pte1(Common::swap32(old_page_table + i + j + k));
-        if (old_pte1.V)
+        for (u32 l = 0; l < std::size(m_ppc_state.sr); ++l)
         {
-          const u32 priority = (k / 8) | (old_pte1.H << 3);
-          std::optional<EffectiveAddress> logical_address = get_page_index(old_pte1, (i + j) / 64);
-          if (!logical_address)
+          const auto sr = UReg_SR{m_ppc_state.sr[l]};
+          if (sr.VSID != old_pte1.VSID || sr.T != 0)
             continue;
 
-          for (u32 l = 0; l < std::size(m_ppc_state.sr); ++l)
+          logical_address->SR = l;
+
+          const auto it = m_page_mappings.find(logical_address->Hex);
+          if (it != m_page_mappings.end() && priority == it->second.priority)
           {
-            const auto sr = UReg_SR{m_ppc_state.sr[l]};
-            if (sr.VSID != old_pte1.VSID || sr.T != 0)
-              continue;
+            if (it->second.host_mapping)
+              m_removed_mappings.emplace(logical_address->Hex);
+            m_page_mappings.erase(it);
 
-            logical_address->SR = l;
-
-            const auto it = m_page_mappings.find(logical_address->Hex);
-            if (it != m_page_mappings.end() && priority == it->second.priority)
-            {
-              if (it->second.host_mapping)
-                m_removed_mappings.emplace(logical_address->Hex);
-              m_page_mappings.erase(it);
-
-              // It's unlikely but possible that this was shadowing another PTE that's using the
-              // same logical address but has a lower priority. If this happens, we must make sure
-              // that we don't skip over that other PTE because of the 8-byte memcmp.
-              fixup_shadowed_mappings(old_pte1, i + j + k, &run_pass_2);
-            }
+            // It's unlikely but possible that this was shadowing another PTE that's using the
+            // same logical address but has a lower priority. If this happens, we must make sure
+            // that we don't skip over that other PTE because of the 8-byte memcmp.
+            fixup_shadowed_mappings(old_pte1, pteg + k, &run_pass_2);
           }
         }
-
-        // Add new primary (H=0) mappings.
-        UPTE_Lo new_pte1(Common::swap32(new_page_table + i + j + k));
-        UPTE_Hi new_pte2(Common::swap32(new_page_table + i + j + k + 4));
-        if (new_pte1.V)
-        {
-          if (new_pte1.H)
-          {
-            run_pass_2 = true;
-            continue;
-          }
-
-          try_add_mapping(new_pte1, new_pte2, i + j + k);
-        }
-
-        // Update our copy of the page table.
-        std::memcpy(old_page_table + i + j + k, new_page_table + i + j + k, 8);
       }
+
+      // Add new primary (H=0) mappings.
+      UPTE_Lo new_pte1(Common::swap32(new_page_table + pteg + k));
+      UPTE_Hi new_pte2(Common::swap32(new_page_table + pteg + k + 4));
+      if (new_pte1.V)
+      {
+        if (new_pte1.H)
+        {
+          run_pass_2 = true;
+          continue;
+        }
+
+        try_add_mapping(new_pte1, new_pte2, pteg + k);
+      }
+
+      // Update our copy of the page table.
+      std::memcpy(old_page_table + pteg + k, new_page_table + pteg + k, 8);
     }
-  }
+  });
 
   // Pass 2: Add new secondary (H=1) mappings. This is a separate pass because before we can process
   // whether a mapping should be added, we first need to check all PTEs that have equal or higher
@@ -1724,37 +1784,27 @@ void MMU::PageTableUpdated(std::span<const u8> page_table)
   // the time, there are no secondary mappings, letting us skip the second pass.
   if (run_pass_2) [[unlikely]]
   {
-    for (u32 i = 0; i < page_table.size(); i += PAGE_TABLE_MIN_SIZE)
-    {
-      if ((i & m_ppc_state.pagetable_mask) != i || (i & m_ppc_state.pagetable_base) != 0)
-        continue;
+    for_each_pteg([&](u32 pteg) {
+      if (compare_64_bytes(old_page_table + pteg, new_page_table + pteg)) [[likely]]
+        return;
 
-      for (u32 j = 0; j < PAGE_TABLE_MIN_SIZE; j += 64)
+      for (u32 k = 0; k < 64; k += 8)
       {
-        if (compare_64_bytes(old_page_table + i + j, new_page_table + i + j)) [[likely]]
+        if (std::memcmp(old_page_table + pteg + k, new_page_table + pteg + k, 8) == 0) [[likely]]
           continue;
 
-        for (u32 k = 0; k < 64; k += 8)
-        {
-          if (std::memcmp(old_page_table + i + j + k, new_page_table + i + j + k, 8) == 0)
-              [[likely]]
-          {
-            continue;
-          }
+        UPTE_Lo new_pte1(Common::swap32(new_page_table + pteg + k));
+        UPTE_Hi new_pte2(Common::swap32(new_page_table + pteg + k + 4));
 
-          UPTE_Lo new_pte1(Common::swap32(new_page_table + i + j + k));
-          UPTE_Hi new_pte2(Common::swap32(new_page_table + i + j + k + 4));
+        // We don't need to check new_pte1.V and new_pte1.H. If the memcmp above returned nonzero,
+        // pass 1 must have skipped running memcpy, which only happens if V and H are both set.
+        DEBUG_ASSERT(new_pte1.V == 1);
+        DEBUG_ASSERT(new_pte1.H == 1);
+        try_add_mapping(new_pte1, new_pte2, pteg + k);
 
-          // We don't need to check new_pte1.V and new_pte1.H. If the memcmp above returned nonzero,
-          // pass 1 must have skipped running memcpy, which only happens if V and H are both set.
-          DEBUG_ASSERT(new_pte1.V == 1);
-          DEBUG_ASSERT(new_pte1.H == 1);
-          try_add_mapping(new_pte1, new_pte2, i + j + k);
-
-          std::memcpy(old_page_table + i + j + k, new_page_table + i + j + k, 8);
-        }
+        std::memcpy(old_page_table + pteg + k, new_page_table + pteg + k, 8);
       }
-    }
+    });
   }
 
   if (!m_removed_mappings.empty())
