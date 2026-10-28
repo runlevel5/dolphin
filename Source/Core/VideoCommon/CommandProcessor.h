@@ -173,6 +173,7 @@ public:
   void SetCPStatusFromCPU();
   void GatherPipeBursted();
   void UpdateInterrupts(u64 userdata);
+  void ApplyPendingInterruptUpdate();
   void UpdateInterruptsFromVideoBackend(u64 userdata);
 
   bool IsInterruptWaiting() const;
@@ -202,6 +203,8 @@ private:
 
   Common::Flag m_interrupt_set;
   Common::Flag m_interrupt_waiting;
+  // The change the GPU thread has scheduled while m_interrupt_waiting is set.
+  std::atomic<u64> m_interrupt_pending_value{0};
 
   bool m_is_fifo_error_seen = false;
 

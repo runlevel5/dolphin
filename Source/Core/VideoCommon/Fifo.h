@@ -68,6 +68,7 @@ public:
   // In single core mode, this runs the GPU for a single slice.
   // In dual core mode, this synchronizes with the GPU thread.
   void SyncGPUForRegisterAccess();
+  void WaitForGpuThreadToFetch();
 
   void PushFifoAuxBuffer(const void* ptr, size_t size);
   void* PopFifoAuxBuffer(size_t size);

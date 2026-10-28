@@ -29,7 +29,7 @@ static bool IsOnThread(const Core::System& system)
 
 static void UpdateInterrupts_Wrapper(Core::System& system, u64 userdata, s64 cyclesLate)
 {
-  system.GetCommandProcessor().UpdateInterrupts(userdata);
+  system.GetCommandProcessor().ApplyPendingInterruptUpdate();
 }
 
 void SCPFifoStruct::Init()
@@ -425,6 +425,16 @@ void CommandProcessorManager::UpdateInterrupts(u64 userdata)
   m_system.GetFifo().RunGpu();
 }
 
+// Applies the interrupt change the GPU thread scheduled, on the CPU thread. The event for it
+// does this when the CPU thread gets there, which can be a while when the game is busy with
+// registers, and a register access that waits for the GPU thread does it first, as the GPU thread
+// takes no FIFO data while the change is pending.
+void CommandProcessorManager::ApplyPendingInterruptUpdate()
+{
+  if (m_interrupt_waiting.IsSet())
+    UpdateInterrupts(m_interrupt_pending_value.load());
+}
+
 void CommandProcessorManager::UpdateInterruptsFromVideoBackend(u64 userdata)
 {
   if (!m_system.GetFifo().UseDeterministicGPUThread())
@@ -500,6 +510,7 @@ void CommandProcessorManager::SetCPStatusFromGPU()
       if (!interrupt || bpInt || undfInt || ovfInt)
       {
         // Schedule the interrupt asynchronously
+        m_interrupt_pending_value.store(userdata);
         m_interrupt_waiting.Set();
         UpdateInterruptsFromVideoBackend(userdata);
       }

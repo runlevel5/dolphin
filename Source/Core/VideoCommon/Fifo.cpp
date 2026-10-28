@@ -37,6 +37,8 @@ namespace Fifo
 {
 static constexpr int GPU_TIME_SLOT_SIZE = 1000;
 static constexpr u32 GPU_BATCH_SIZE = 4 * 1024;
+// See WaitForGpuThreadToFetch.
+static constexpr u32 GPU_FETCH_WAIT_LIMIT = 16 * GPFifo::GATHER_PIPE_SIZE;
 
 FifoManager::FifoManager(Core::System& system) : m_system{system}
 {
@@ -250,7 +252,10 @@ void FifoManager::ReadDataFromFifo(u32 read_ptr, u32 size)
 // is crossed, so interrupts are raised after the same burst as before.
 u32 FifoManager::GetGpuBatchSize(const CommandProcessor::SCPFifoStruct& fifo, u32 read_ptr) const
 {
-  const u32 distance = fifo.CPReadWriteDistance.load(std::memory_order_relaxed);
+  // The CPU thread writes a burst to memory before it adds it to the distance. The loads of the
+  // burst below must not be reordered before this load, or they can get what the memory held
+  // before, which x86 doesn't do but POWER and ARM may: acquire pairs with the CPU thread's RMW.
+  const u32 distance = fifo.CPReadWriteDistance.load(std::memory_order_acquire);
   const u32 end = fifo.CPEnd.load(std::memory_order_relaxed);
   if (m_config_sync_gpu || read_ptr > end)
     return GPFifo::GATHER_PIPE_SIZE;
@@ -661,6 +666,33 @@ void FifoManager::SyncGPUForRegisterAccess()
     RunGpuOnCpu(GPU_TIME_SLOT_SIZE);
   else if (m_config_sync_gpu)
     WaitForGpuThread(GPU_TIME_SLOT_SIZE);
+  else
+    WaitForGpuThreadToFetch();
+}
+
+// The command processor fetches a burst within microseconds of the CPU writing it, and games
+// read the FIFO registers on that assumption: Rogue Squadron III writes a burst, reads the read
+// pointer a few dozen microseconds later and keeps it, to put the FIFO back later. The GPU thread
+// may not have got to it, in particular while an interrupt change it scheduled waits for the CPU
+// thread, and then the game keeps the burst as pending, reuses its memory in the meantime, and
+// has it decoded as commands once the FIFO is back. So wait for the GPU thread when the FIFO
+// holds no more than a few bursts: the hardware would have taken those by now.
+void FifoManager::WaitForGpuThreadToFetch()
+{
+  auto& command_processor = m_system.GetCommandProcessor();
+  const auto& fifo = command_processor.GetFifo();
+  for (int i = 0; i < 4; i++)
+  {
+    if (!fifo.bFF_GPReadEnable.load(std::memory_order_relaxed) || AtBreakpoint(m_system))
+      return;
+    const u32 distance = fifo.CPReadWriteDistance.load(std::memory_order_relaxed);
+    if (distance == 0 || distance > GPU_FETCH_WAIT_LIMIT)
+      return;
+
+    command_processor.ApplyPendingInterruptUpdate();
+    RunGpu();
+    m_gpu_mainloop.Wait();
+  }
 }
 
 // Initialize GPU - CPU thread syncing, this gives us a deterministic way to start the GPU thread.
