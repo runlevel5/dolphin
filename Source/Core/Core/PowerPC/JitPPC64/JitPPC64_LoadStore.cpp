@@ -374,9 +374,10 @@ void JitPPC64::EmitTranslatedRAMAccess(MemAccess access)
   // Accesses through the page table can't use fastmem when the host's pages are larger than the
   // guest's 4 KiB, which leaves them to the MMU. Translate the address instead, by MemoryManager's
   // page translations, or as TranslateAddress does, by a DBAT or the data TLB, and access RAM
-  // directly. Anything else falls through to the MMU, which repeats the lookup: TLB misses, stores
-  // that set the C bit, page crossings, real mode, MMIO, and the stores to uncached memory that
-  // WriteToHardware handles specially.
+  // directly, or the physical arena for what a DBAT maps: an access that was patched to come here
+  // for one address may be to others, as the locked cache. Anything else falls through to the
+  // MMU, which repeats the lookup: TLB misses, stores that set the C bit, page crossings, real
+  // mode, MMIO, and the stores to uncached memory that WriteToHardware handles specially.
   // Uses R0 and R12, and R5 and R6, which it saves.
   const u32 size = access.size / 8;
   auto& memory = m_system.GetMemory();
@@ -416,6 +417,20 @@ void JitPPC64::EmitTranslatedRAMAccess(MemAccess access)
   LWZX(GPR::R12, GPR::R12, GPR::R0);
   ANDI_(GPR::R0, GPR::R12, PowerPC::BAT_MAPPED_BIT);
   const FixupBranch no_bat = BC(CCFlags::EQ, CRF::CR0);
+  if (jo.fastmem_arena)
+  {
+    // The physical arena holds everything a BAT marked physical maps: memory that's cached, has
+    // no memory check, and is in a region, as the locked cache is.
+    ANDI_(GPR::R0, GPR::R12, PowerPC::BAT_PHYSICAL_BIT);
+    const FixupBranch not_physical = BC(CCFlags::EQ, CRF::CR0);
+    RLWIMI(GPR::R12, GPR::R3, 0, 32 - PowerPC::BAT_INDEX_SHIFT, 31);
+    MOVP2R(GPR::R0, memory.GetPhysicalBase());
+    LD(GPR::R5, GPR::SP, ScratchSaveOffset(GPR::R5));
+    LD(GPR::R6, GPR::SP, ScratchSaveOffset(GPR::R6));
+    EmitFastAccess(access, access.store ? GPR::R4 : GPR::R3, GPR::R0, GPR::R12);
+    BLR();
+    SetJumpTarget(not_physical);
+  }
   ANDI_(GPR::R5, GPR::R12, PowerPC::BAT_WI_BIT);
   RLWIMI(GPR::R12, GPR::R3, 0, 32 - PowerPC::BAT_INDEX_SHIFT, 31);
   const FixupBranch bat_translated = B();
