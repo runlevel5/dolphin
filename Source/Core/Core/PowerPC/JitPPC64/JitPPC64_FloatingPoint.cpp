@@ -37,9 +37,38 @@ void JitPPC64::EnsureNILoaded()
   m_ni_loaded = true;
 }
 
+// The flushes test the value where it is, by Power ISA 3.0's data class test and exponent
+// extraction, and branch to far code only to flush: games that set NI keep it set, and a test in
+// far code would take two branches and a round trip through a GPR for every result. Without those
+// instructions, far code tests the bits in a GPR when NI is set.
+
+void JitPPC64::FlushToSignedZero(VSR reg)
+{
+  const auto zero = fpr.GetScopedReg();
+  XXLXOR(zero, zero, zero);
+  XSCPSGNDP(reg, reg, zero);
+}
+
 void JitPPC64::ForceDouble(VSR reg)
 {
   EnsureNILoaded();
+  if (m_isa_3_0)
+  {
+    // As Common::FlushToZero: a denormal becomes a zero of the same sign, when NI is set.
+    XSTSTDCDP(CRF::CR1, reg, 0x03);
+    CRANDC(CRBit(CRF::CR1, CCFlags::EQ), CRBit(CRF::CR1, CCFlags::EQ),
+           CRBit(CRF::CR4, CCFlags::EQ));
+    const FixupBranch flush = BCFar(CCFlags::EQ, CRF::CR1);
+    const u8* done = GetCodePtr();
+
+    SwitchToFarCode();
+    SetJumpTarget(flush);
+    FlushToSignedZero(reg);
+    B(done);
+    SwitchToNearCode();
+    return;
+  }
+
   const FixupBranch ni = BCFar(CCFlags::NE, CRF::CR4);
   const u8* done = GetCodePtr();
 
@@ -63,13 +92,37 @@ void JitPPC64::ForceDouble(VSR reg)
 void JitPPC64::ForceSingle(VSR reg)
 {
   EnsureNILoaded();
+  // With NI, a value below the smallest normal single is flushed to a zero of the same sign before
+  // it's rounded. Rounding can't make any other value denormal.
+  if (m_isa_3_0)
+  {
+    // Below it is an exponent below the smallest normal single's: zeroes and denormals too, which
+    // the flush leaves as they are, and never NaNs or infinities.
+    {
+      const auto exp = gpr.GetScopedReg();
+      XSXEXPDP(exp, reg);
+      CMPLDI(CRF::CR1, exp, 0x381);
+    }
+    CRANDC(CRBit(CRF::CR1, CCFlags::LT), CRBit(CRF::CR1, CCFlags::LT),
+           CRBit(CRF::CR4, CCFlags::EQ));
+    const FixupBranch flush = BCFar(CCFlags::LT, CRF::CR1);
+    const u8* round = GetCodePtr();
+    XSRSP(reg, reg);
+
+    SwitchToFarCode();
+    SetJumpTarget(flush);
+    FlushToSignedZero(reg);
+    // Rounding leaves a zero as it is.
+    B(round);
+    SwitchToNearCode();
+    return;
+  }
+
   const FixupBranch ni = BCFar(CCFlags::NE, CRF::CR4);
   const u8* round = GetCodePtr();
   XSRSP(reg, reg);
   const u8* done = GetCodePtr();
 
-  // With NI, a value below the smallest normal single is flushed to a zero of the same sign before
-  // it's rounded. Rounding can't make any other value denormal.
   SwitchToFarCode();
   SetJumpTarget(ni);
   {

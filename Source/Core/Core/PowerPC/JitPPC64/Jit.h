@@ -327,6 +327,8 @@ protected:
   // as EQ if it's clear: CR4 is non-volatile, so it's loaded once per block, and again after
   // calls into code that can change the FPSCR.
   void EnsureNILoaded();
+  // In far code: makes the double in reg a zero of its sign.
+  void FlushToSignedZero(PPC64Gen::VSR reg);
   // Flushes a denormal double-precision result in reg to zero if NI is set, as ForceDouble.
   void ForceDouble(PPC64Gen::VSR reg);
   // Rounds a double-precision result in reg to single precision, as ForceSingle.
