@@ -172,6 +172,7 @@ public:
   void SetCPStatusFromGPU();
   void SetCPStatusFromCPU();
   void GatherPipeBursted();
+  bool CanGpuTakeData() const;
   void UpdateInterrupts(u64 userdata);
   void ApplyPendingInterruptUpdate();
   void UpdateInterruptsFromVideoBackend(u64 userdata);
