@@ -4,16 +4,20 @@
 #include "VideoCommon/VertexLoaderPPC64.h"
 
 #include <array>
+#include <cstdlib>
+#include <string_view>
 
 #include "Common/Assert.h"
+#include "Common/CPUDetect.h"
 #include "Common/CommonTypes.h"
+#include "Common/JitRegister.h"
 #include "VideoCommon/CPMemory.h"
 #include "VideoCommon/VertexLoaderManager.h"
 
 using namespace PPC64Gen;
 
 // The loader is a leaf function: RunVertices(src, dst, count - 1), returning the number of vertices
-// loaded. It uses the volatile registers, and R14-R16, which it saves below the stack pointer, in
+// loaded. It uses the volatile registers, and R14-R17, which it saves below the stack pointer, in
 // the ELFv2 ABI's protected zone.
 constexpr GPR src_reg = GPR::R3;
 constexpr GPR dst_reg = GPR::R4;
@@ -29,10 +33,14 @@ constexpr GPR scratch2_reg = GPR::R12;
 constexpr GPR scratch3_reg = GPR::R14;
 constexpr GPR scratch4_reg = GPR::R15;
 constexpr GPR scratch5_reg = GPR::R16;
+// The VPERM controls, with Power ISA 3.0.
+constexpr GPR permute_reg = GPR::R17;
 // An offset for X-form loads and stores. R0 can't be a base register.
 constexpr GPR offset_reg = GPR::R0;
 constexpr VSR value_vsr = VSR::VS32;
 constexpr VSR scale_vsr = VSR::VS33;
+constexpr VSR permute_vsr = VSR::VS34;
+constexpr VSR zero_vsr = VSR::VS35;
 
 alignas(16) static const float scale_factors[] = {
     1.0 / (1ULL << 0),  1.0 / (1ULL << 1),  1.0 / (1ULL << 2),  1.0 / (1ULL << 3),
@@ -45,14 +53,74 @@ alignas(16) static const float scale_factors[] = {
     1.0 / (1ULL << 28), 1.0 / (1ULL << 29), 1.0 / (1ULL << 30), 1.0 / (1ULL << 31),
 };
 
+// The VPERM control that moves an attribute's elements, as loaded, into word elements in the
+// order a store puts them in memory. Register bytes are numbered from the most significant, as
+// VPERM numbers them. A load of 4 or 8 bytes (lxsiwzx, lxsdx) makes doubleword 0 the little-endian
+// integer of the bytes, so memory byte k is register byte 7 - k; a load of 16 (lxvx) makes memory
+// byte k register byte 15 - k. Element j goes right-aligned into the word that a store of
+// stored_words words puts j-th in memory: word 1 for stxsiwx, words 1, 0 for stxsd, words 3 to 0
+// for stxvx. The other bytes come from the zero register, VPERM's second source. The control is
+// loaded with lxvx too, so its bytes are stored reversed: control byte i at memory byte 15 - i.
+struct Permute
+{
+  alignas(16) u8 bytes[16];
+};
+
+constexpr Permute MakePermute(int elem_size, int count, int stored_words, bool load16)
+{
+  Permute p{};
+  for (u8& b : p.bytes)
+    b = 16;
+  for (int j = 0; j < count; j++)
+  {
+    const int word = stored_words == 1 ? 1 : stored_words - 1 - j;
+    if (word < 0)
+      break;  // More elements than words: a combination that isn't used.
+    for (int e = 0; e < elem_size; e++)
+    {
+      const int mem = j * elem_size + e;
+      p.bytes[15 - (word * 4 + 4 - elem_size + e)] = static_cast<u8>(load16 ? 15 - mem : 7 - mem);
+    }
+  }
+  return p;
+}
+
+constexpr int PermuteIndex(int elem_size, int count, int stored_words, bool load16)
+{
+  const int size_index = elem_size == 1 ? 0 : elem_size == 2 ? 1 : 2;
+  const int words_index = stored_words == 1 ? 0 : stored_words == 2 ? 1 : 2;
+  return ((size_index * 3 + (count - 1)) * 3 + words_index) * 2 + (load16 ? 1 : 0);
+}
+
+constexpr auto s_permutes = [] {
+  std::array<Permute, 54> permutes{};
+  for (int elem_size : {1, 2, 4})
+    for (int count = 1; count <= 3; count++)
+      for (int stored_words : {1, 2, 4})
+        for (bool load16 : {false, true})
+          permutes[PermuteIndex(elem_size, count, stored_words, load16)] =
+              MakePermute(elem_size, count, stored_words, load16);
+  return permutes;
+}();
+
 VertexLoaderPPC64::VertexLoaderPPC64(const TVtxDesc& vtx_desc, const VAT& vtx_att)
     : VertexLoaderBase(vtx_desc, vtx_att)
 {
+  // The same override as JitPPC64's, so that a run at a lower ISA level covers this too.
+  m_isa_3_0 = cpu_info.bISA_3_0;
+  if (const char* isa = std::getenv("DOLPHIN_PPC64_ISA"))
+  {
+    if (std::string_view(isa) == "2.07")
+      m_isa_3_0 = false;
+  }
   AllocCodeSpace(16384);
   const Common::ScopedJITPageWriteAndNoExecute enable_jit_page_writes;
   ClearCodeSpace();
   GenerateVertexLoader();
   WriteProtect(true);
+
+  Common::JitRegister::Register(region, GetCodePtr(), "VertexLoaderPPC64\nVtx desc: \n{}\nVAT:\n{}",
+                                vtx_desc, vtx_att);
 }
 
 // Returns the register to use as the base and an offset from that register.
@@ -98,40 +166,130 @@ void VertexLoaderPPC64::ReadVertex(VertexComponentFormat attribute, ComponentFor
   const int load_bytes = elem_size * count_in;
   const bool scale = format < ComponentFormat::Float && dequantize && scaling_exponent;
 
+  // Where the Z-freeze cache goes, if this attribute has one: the position cache has the last
+  // three positions, the normal caches the last normal, tangent and binormal.
+  const void* cache_base = nullptr;
+  if (native_format == &m_native_vtx_decl.position)
+    cache_base = VertexLoaderManager::position_cache.data();
+  else if (native_format == &m_native_vtx_decl.normals[0])
+    cache_base = VertexLoaderManager::normal_cache.data();
+  else if (native_format == &m_native_vtx_decl.normals[1])
+    cache_base = VertexLoaderManager::tangent_cache.data();
+  else if (native_format == &m_native_vtx_decl.normals[2])
+    cache_base = VertexLoaderManager::binormal_cache.data();
+
+  if (m_isa_3_0)
+    ReadVertexVector(format, count_in, count_out, scale, scaling_exponent, cache_base, reg, offset);
+  else
+    ReadVertexScalar(format, count_in, count_out, scale, scaling_exponent, cache_base, reg, offset);
+
+  native_format->components = count_out;
+  native_format->enable = true;
+  native_format->offset = m_dst_ofs;
+  native_format->type = ComponentFormat::Float;
+  native_format->integer = false;
+  m_dst_ofs += sizeof(float) * count_out;
+
+  if (attribute == VertexComponentFormat::Direct)
+    m_src_ofs += load_bytes;
+}
+
+// With Power ISA 3.0: the elements are loaded together, moved into words by VPERM, converted and
+// scaled as a vector, and stored together, 16 bytes for three elements as the x86-64 loader does,
+// where the next attribute or vertex overwrites the fourth. The scaling is exact in single
+// precision as in double: the values have at most 16 bits and the scale is a power of two.
+void VertexLoaderPPC64::ReadVertexVector(ComponentFormat format, int count_in, int count_out,
+                                         bool scale, u8 scaling_exponent, const void* cache_base,
+                                         GPR reg, u32 offset)
+{
+  const int elem_size = GetElementSize(format);
+  const int load_bytes = elem_size * count_in;
+  const bool load16 = load_bytes > 8;
+  const int stored_words = count_out == 1 ? 1 : count_out == 2 ? 2 : 4;
+
+  LI(offset_reg, static_cast<s16>(offset));
+  if (load_bytes <= 4)
+    LXSIWZX(value_vsr, reg, offset_reg);
+  else if (!load16)
+    LXSDX(value_vsr, reg, offset_reg);
+  else
+    LXVX(value_vsr, reg, offset_reg);
+  LI(offset_reg, static_cast<s16>(PermuteIndex(elem_size, count_in, stored_words, load16) * 16));
+  LXVX(permute_vsr, permute_reg, offset_reg);
+  if (scale)
+  {
+    LI(offset_reg, static_cast<s16>(scaling_exponent * 4));
+    LXVWSX(scale_vsr, scale_reg, offset_reg);
+  }
+
+  VPERM(value_vsr, value_vsr, zero_vsr, permute_vsr);
+  if (format < ComponentFormat::Float)
+  {
+    if (format == ComponentFormat::Byte)
+      VEXTSB2W(value_vsr, value_vsr);
+    else if (format == ComponentFormat::Short)
+      VEXTSH2W(value_vsr, value_vsr);
+    XVCVSXWSP(value_vsr, value_vsr);
+    if (scale)
+      XVMULSP(value_vsr, value_vsr, scale_vsr);
+  }
+
+  const auto store = [&](GPR base, s16 disp) {
+    if (stored_words == 2)
+    {
+      STXSD(value_vsr, base, disp);
+    }
+    else
+    {
+      LI(offset_reg, disp);
+      if (stored_words == 1)
+        STXSIWX(value_vsr, base, offset_reg);
+      else
+        STXVX(value_vsr, base, offset_reg);
+    }
+  };
+  store(dst_reg, static_cast<s16>(m_dst_ofs));
+
+  // The Z-freeze cache: position_cache's entry for the remaining count if it's below 3, the
+  // normal's if it's 0.
+  if (cache_base != nullptr)
+  {
+    const bool position = cache_base == VertexLoaderManager::position_cache.data();
+    CMPWI(CRF::CR1, remaining_reg, position ? 3 : 0);
+    const FixupBranch no_cache = BC(position ? CCFlags::GE : CCFlags::NE, CRF::CR1);
+    MOVP2R(scratch5_reg, cache_base);
+    if (position)
+    {
+      RLDICR(scratch4_reg, remaining_reg, 4, 59);  // * sizeof(std::array<float, 4>)
+      ADD(scratch5_reg, scratch5_reg, scratch4_reg);
+    }
+    store(scratch5_reg, 0);
+    SetJumpTarget(no_cache);
+  }
+}
+
+void VertexLoaderPPC64::ReadVertexScalar(ComponentFormat format, int count_in, int count_out,
+                                         bool scale, u8 scaling_exponent, const void* cache_base,
+                                         GPR reg, u32 offset)
+{
+  const int elem_size = GetElementSize(format);
+
   if (scale)
   {
     LI(offset_reg, static_cast<s16>(scaling_exponent * 4));
     LXSSPX(scale_vsr, scale_reg, offset_reg);
   }
 
-  // Where the Z-freeze caches go, if this attribute has one.
   enum class Cache
   {
     None,
     Position,
     Normal,
   } cache = Cache::None;
-  const void* cache_base = nullptr;
-  if (native_format == &m_native_vtx_decl.position)
-  {
+  if (cache_base == VertexLoaderManager::position_cache.data())
     cache = Cache::Position;
-    cache_base = VertexLoaderManager::position_cache.data();
-  }
-  else if (native_format == &m_native_vtx_decl.normals[0])
-  {
+  else if (cache_base != nullptr)
     cache = Cache::Normal;
-    cache_base = VertexLoaderManager::normal_cache.data();
-  }
-  else if (native_format == &m_native_vtx_decl.normals[1])
-  {
-    cache = Cache::Normal;
-    cache_base = VertexLoaderManager::tangent_cache.data();
-  }
-  else if (native_format == &m_native_vtx_decl.normals[2])
-  {
-    cache = Cache::Normal;
-    cache_base = VertexLoaderManager::binormal_cache.data();
-  }
 
   // The address of the cache entry, if it's to be written: for positions, the entry of
   // position_cache for the remaining count, if it's below 3; for normals, if it's 0.
@@ -219,16 +377,6 @@ void VertexLoaderPPC64::ReadVertex(VertexComponentFormat attribute, ComponentFor
     LI(scratch2_reg, 0);
     STW(scratch2_reg, dst_reg, static_cast<s16>(m_dst_ofs + i * 4));
   }
-
-  native_format->components = count_out;
-  native_format->enable = true;
-  native_format->offset = m_dst_ofs;
-  native_format->type = ComponentFormat::Float;
-  native_format->integer = false;
-  m_dst_ofs += sizeof(float) * count_out;
-
-  if (attribute == VertexComponentFormat::Direct)
-    m_src_ofs += load_bytes;
 }
 
 void VertexLoaderPPC64::ReadColor(VertexComponentFormat attribute, ColorFormat format, GPR reg,
@@ -341,6 +489,8 @@ void VertexLoaderPPC64::GenerateVertexLoader()
   STD(scratch3_reg, GPR::SP, -8);
   STD(scratch4_reg, GPR::SP, -16);
   STD(scratch5_reg, GPR::SP, -24);
+  if (m_isa_3_0)
+    STD(permute_reg, GPR::SP, -32);
   if (IsIndexed(m_VtxDesc.low.Position))
     LI(skipped_reg, 0);
   ADDI(saved_count, remaining_reg, 1);
@@ -349,6 +499,11 @@ void VertexLoaderPPC64::GenerateVertexLoader()
   MOVP2R(arraybase_reg, VertexLoaderManager::cached_arraybases.data());
   if (need_scale)
     MOVP2R(scale_reg, scale_factors);
+  if (m_isa_3_0)
+  {
+    MOVP2R(permute_reg, s_permutes.data());
+    XXLXOR(zero_vsr, zero_vsr, zero_vsr);
+  }
 
   const u8* loop_start = GetCodePtr();
 
@@ -500,6 +655,8 @@ void VertexLoaderPPC64::GenerateVertexLoader()
   LD(scratch3_reg, GPR::SP, -8);
   LD(scratch4_reg, GPR::SP, -16);
   LD(scratch5_reg, GPR::SP, -24);
+  if (m_isa_3_0)
+    LD(permute_reg, GPR::SP, -32);
   BLR();
 
   if (IsIndexed(m_VtxDesc.low.Position))

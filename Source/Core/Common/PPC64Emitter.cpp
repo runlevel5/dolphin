@@ -1753,6 +1753,7 @@ XX2_OP(XVCVDPSP, 393)
 XX2_OP(XVCVSPDP, 457)
 XX2_OP(XVCVSXDDP, 504)
 XX2_OP(XVCVDPSXWS, 216)
+XX2_OP(XVCVSXWSP, 184)
 
 XX3_OP(XVADDSP, 64)
 XX3_OP(XVSUBSP, 72)
@@ -1831,6 +1832,22 @@ void PPC64XEmitter::VMRGEW(VSR vrt, VSR vra, VSR vrb)
 {
   Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
           1932);
+}
+
+void PPC64XEmitter::VPERM(VSR vrt, VSR vra, VSR vrb, VSR vrc)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (VRNumber(vra) << 16) | (VRNumber(vrb) << 11) |
+          (VRNumber(vrc) << 6) | 43);
+}
+
+void PPC64XEmitter::VEXTSB2W(VSR vrt, VSR vrb)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (16 << 16) | (VRNumber(vrb) << 11) | 1538);
+}
+
+void PPC64XEmitter::VEXTSH2W(VSR vrt, VSR vrb)
+{
+  Write32((OP_VMX << 26) | (VRNumber(vrt) << 21) | (17 << 16) | (VRNumber(vrb) << 11) | 1538);
 }
 
 void PPC64XEmitter::MTVSCR(VR vrb)

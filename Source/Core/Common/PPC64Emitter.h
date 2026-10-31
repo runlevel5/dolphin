@@ -814,6 +814,8 @@ public:
   // 2, saturating, NaNs to 0x80000000.
   void XVCVSXDDP(VSR xt, VSR xb);
   void XVCVDPSXWS(VSR xt, VSR xb);
+  // Converts all four signed words to single precision.
+  void XVCVSXWSP(VSR xt, VSR xb);
 
   // VSX vector floating-point, on all four words
   void XVADDSP(VSR xt, VSR xa, VSR xb);
@@ -845,6 +847,12 @@ public:
   void VSLW(VSR vrt, VSR vra, VSR vrb);
   void VCMPGTUW(VSR vrt, VSR vra, VSR vrb, bool rc = false);
   void VMRGEW(VSR vrt, VSR vra, VSR vrb);
+  // VMX permute: byte i of vrt is byte (vrc.byte[i] & 31) of vra || vrb, bytes numbered from the
+  // most significant.
+  void VPERM(VSR vrt, VSR vra, VSR vrb, VSR vrc);
+  // Power ISA 3.0 (POWER9): sign-extends the low byte or halfword of each word.
+  void VEXTSB2W(VSR vrt, VSR vrb);
+  void VEXTSH2W(VSR vrt, VSR vrb);
 
   // Vector status and control register
   void MFVSCR(VR vrt);

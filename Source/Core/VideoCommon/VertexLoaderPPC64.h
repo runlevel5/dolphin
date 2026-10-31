@@ -25,11 +25,16 @@ protected:
 private:
   u32 m_src_ofs = 0;
   u32 m_dst_ofs = 0;
+  bool m_isa_3_0 = false;
   PPC64Gen::FixupBranch m_skip_vertex;
   std::pair<PPC64Gen::GPR, u32> GetVertexAddr(CPArray array, VertexComponentFormat attribute);
   void ReadVertex(VertexComponentFormat attribute, ComponentFormat format, int count_in,
                   int count_out, bool dequantize, u8 scaling_exponent,
                   AttributeFormat* native_format, PPC64Gen::GPR reg, u32 offset);
+  void ReadVertexVector(ComponentFormat format, int count_in, int count_out, bool scale,
+                        u8 scaling_exponent, const void* cache_base, PPC64Gen::GPR reg, u32 offset);
+  void ReadVertexScalar(ComponentFormat format, int count_in, int count_out, bool scale,
+                        u8 scaling_exponent, const void* cache_base, PPC64Gen::GPR reg, u32 offset);
   void ReadColor(VertexComponentFormat attribute, ColorFormat format, PPC64Gen::GPR reg,
                  u32 offset);
   void GenerateVertexLoader();
